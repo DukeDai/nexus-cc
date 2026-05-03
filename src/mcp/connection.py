@@ -174,7 +174,7 @@ class MCPConnectionManager:
         """Lazily import and return the MCP client."""
         if self._mcp_client is None:
             try:
-                from mcp.client import Client
+                from ..mcp.client import Client
                 self._mcp_client = Client
             except ImportError:
                 raise ImportError(

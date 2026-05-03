@@ -1,12 +1,12 @@
 """MCP (Model Context Protocol) integration for Nexus."""
 
-from mcp.connection import (
+from .connection import (
     MCPConnectionManager,
     MCPConnectionState,
     MCPServerConfig,
     MCPServerInfo,
 )
-from mcp.bridge import (
+from .bridge import (
     CacheEntry,
     MCPToolBridge,
     MCPToolBridgeConfig,
@@ -14,9 +14,9 @@ from mcp.bridge import (
     RateLimitConfig,
     RateLimitScope,
 )
-from mcp.config import MCPConfigManager
-from mcp.integration import MCPBridgeConfig, RalphLoopMCPBridge
-from mcp.presets import (
+from .config import MCPConfigManager
+from .integration import MCPBridgeConfig, RalphLoopMCPBridge
+from .presets import (
     GitHubPreset,
     MCPPresets,
     PostgreSQLPreset,

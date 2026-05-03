@@ -23,8 +23,8 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Callable, Optional, Any
 
-from ralphloop.states import RalphState
-from ralphloop.transitions import (
+from .states import RalphState
+from .transitions import (
     Transition,
     TransitionContext,
     TransitionTrigger,

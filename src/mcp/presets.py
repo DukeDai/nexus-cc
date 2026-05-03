@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from mcp.config import MCPServerConfig
+from ..mcp.config import MCPServerConfig
 
 
 # === Base Preset ===

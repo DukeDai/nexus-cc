@@ -7,9 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from ralphloop.orchestrator import RalphLoop
-from ralphloop.states import RalphState
-from session.models import (
+from ..ralphloop.orchestrator import RalphLoop
+from ..ralphloop.states import RalphState
+from ..session.models import (
     AgentStateRecord,
     RalphLoopSnapshot,
     SessionData,
@@ -18,7 +18,7 @@ from session.models import (
     TaskRecord,
     new_session_id,
 )
-from session.store import SessionStore
+from ..session.store import SessionStore
 
 
 class SessionManager:
@@ -191,7 +191,7 @@ class SessionManager:
         if result is None:
             return None
         _, data_json = result
-        from session.models import SessionData as SD
+        from ..session.models import SessionData as SD
         return SD.from_dict(__import__("json").loads(data_json))
 
     def restore(

@@ -1,6 +1,6 @@
 """Nexus Multi-Agent Specialization System."""
 
-from agents.base import (
+from .base import (
     AgentRole,
     AgentResult,
     BaseAgent,
@@ -8,10 +8,10 @@ from agents.base import (
     ModelTier,
     TaskSpec,
 )
-from agents.specifier import SpecifierAgent
-from agents.implementer import ImplementerAgent
-from agents.reviewer import ReviewerAgent
-from agents.security import SecurityAgent
+from .specifier import SpecifierAgent
+from .implementer import ImplementerAgent
+from .reviewer import ReviewerAgent
+from .security import SecurityAgent
 
 __all__ = [
     "AgentResult",

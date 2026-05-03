@@ -1,8 +1,8 @@
 """Context management for Nexus — budget monitoring, CLAUDE.md hierarchy, worktree."""
 
-from context.monitor import ContextBudgetMonitor, BudgetTier
-from context.claudemd import ClaudeMD, ClaudeMDLoader
-from context.worktree import WorktreeManager
+from .monitor import ContextBudgetMonitor, BudgetTier
+from .claudemd import ClaudeMD, ClaudeMDLoader
+from .worktree import WorktreeManager
 
 # Alias for backwards compatibility
 ContextMonitor = ContextBudgetMonitor

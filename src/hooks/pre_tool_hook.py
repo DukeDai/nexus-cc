@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from hooks.hook_manager import HookContext, HookEvent
+from ..hooks.hook_manager import HookContext, HookEvent
 
 
 @dataclass

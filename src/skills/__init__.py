@@ -1,8 +1,8 @@
-"""Nexus Skills — self-improvement through mistake capture and pattern learning."""
+"""Skills system for Nexus — Mistake capture, skill authoring, skill loading."""
 
-from skills.capture import MistakeCapture
-from skills.author import SkillAuthor
-from skills.loader import SkillLoader
+from .capture import MistakeCapture
+from .author import SkillAuthor
+from .loader import SkillLoader
 
 __all__ = [
     "MistakeCapture",

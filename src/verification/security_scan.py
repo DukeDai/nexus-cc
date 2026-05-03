@@ -18,9 +18,9 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional, Any, Callable
 
-# Re-export FindingSeverity from agents.security for consistency
+# Re-export FindingSeverity from ..agents.security for consistency
 try:
-    from agents.security import FindingSeverity
+    from ..agents.security import FindingSeverity
 except ImportError:
     # Fallback if agents not available
     class FindingSeverity(Enum):
