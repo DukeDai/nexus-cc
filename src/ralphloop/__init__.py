@@ -56,6 +56,29 @@ from .agent_loop import (
     AgentLoopConfig,  # Loop configuration
 )
 
+from .subagent_registry import (
+    SubagentDefinition,  # Subagent role definition
+    SUBAGENT_DEFINITIONS,  # All subagent definitions
+    get_subagent,  # Get subagent by name
+    get_all_subagents,  # Get all subagents
+)
+
+from .claude_md_loader import (
+    ProjectContext,  # Project context manager
+    load_claude_md,  # Load CLAUDE.md
+    find_project_root,  # Find project root
+    find_claude_md,  # Find CLAUDE.md path
+    build_llm_system_prompt,  # Build LLM system prompt
+    get_project_context,  # Get full project context
+)
+
+from .subagent_integration import (
+    SubagentIntegration,  # Subagent orchestration bridge
+    SubagentResult,  # Subagent execution result
+    OrchestratedResult,  # Aggregated orchestration result
+    orchestrate_with_subagents,  # High-level entry point
+)
+
 __all__ = [
     # States
     "RalphState",
@@ -85,6 +108,23 @@ __all__ = [
     "ToolExecutor",
     "LoopResult",
     "AgentLoopConfig",
+    # Subagent system
+    "SubagentDefinition",
+    "SUBAGENT_DEFINITIONS",
+    "get_subagent",
+    "get_all_subagents",
+    # CLAUDE.md loader
+    "ProjectContext",
+    "load_claude_md",
+    "find_project_root",
+    "find_claude_md",
+    "build_llm_system_prompt",
+    "get_project_context",
+    # Subagent integration
+    "SubagentIntegration",
+    "SubagentResult",
+    "OrchestratedResult",
+    "orchestrate_with_subagents",
 ]
 
 __version__ = "0.1.0"
