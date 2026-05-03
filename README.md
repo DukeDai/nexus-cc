@@ -19,7 +19,8 @@
 ## 安装
 
 ```bash
-cd ~/dev/nexus
+git clone https://github.com/DukeDai/nexus-cc.git
+cd nexus-cc
 pip install -e .
 ```
 
