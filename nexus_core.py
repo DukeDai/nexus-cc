@@ -6,7 +6,7 @@ RalphLoop: PLAN → ACT → VERIFY → REFLECT → (COMMIT|RETRY|ESCALATE|ABORT)
 """
 
 from __future__ import annotations
-import os, sys, json, re, time, subprocess
+import os, sys, json, re, time, subprocess, difflib
 from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass, field
@@ -282,10 +282,10 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "apply_diff",
-        "description": "Apply a unified diff to a file. The most powerful editing tool.",
+        "description": "Apply a unified diff to a file. Parses `---/+++` hunks with `@@` range headers, validates context matches, detects conflicts, and supports partial success (valid hunks applied even if some fail). Returns detailed status: lines removed/added, hunks succeeded/failed, and any conflicts detected.",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
-            "diff": {"type": "string", "description": "Unified diff string"}
+            "diff": {"type": "string", "description": "Unified diff string (output of `diff -u`)"}
         }, "required": ["path", "diff"]}
     },
     {
@@ -405,93 +405,197 @@ class ToolExecutor:
         return "\n".join(results[:50])
     
     def _apply_diff(self, path: str, diff: str) -> str:
-        """Apply a unified diff to a file."""
+        """Apply a unified diff to a file with robust parsing, hunk-level error detection,
+        partial success handling, and conflict detection.
+        
+        Bugs fixed vs old implementation:
+        - Index tracking: old code mutated idx during deletion/insertion causing wrong positions
+        - Insert position: old code inserted at wrong index after deletions
+        - Unified diff parsing: properly handles ---/+++ headers per hunk
+        - Context validation: verifies context lines match before applying hunk
+        - Conflict detection: detects when a hunk cannot be applied cleanly
+        - Partial success: applies valid hunks even when later hunks fail
+        """
         p = (self.workdir / path).resolve()
         if not p.exists():
             return f"ERROR: File not found: {p}"
-        
-        # Parse the unified diff
+
         import difflib
-        lines = diff.split("\n")
         
-        # Find the original file content
+        # Read original file
         with open(p) as f:
-            original_lines = f.readlines()
+            original_lines = [line.rstrip('\n') for line in f.readlines()]
         
-        # Parse unified diff
-        # @@ -start,count +start,count @@
-        # Format: --- original\n+++ new\n@@@
-        patched_lines = original_lines[:]
-        diff_lines = []
-        in_diff = False
-        old_start, old_count, new_start = 0, 0, 0
+        diff_lines = diff.split("\n")
         
-        for line in lines:
+        # Parse all hunks from the diff
+        hunks = []
+        i = 0
+        while i < len(diff_lines):
+            line = diff_lines[i]
             if line.startswith("@@ "):
-                in_diff = True
-                # Parse @@ -old_start,old_count +new_start,new_count @@
+                # Parse hunk header: @@ -old_start[,old_count] +new_start[,new_count] @@
                 m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
-                if m:
-                    old_start = int(m.group(1))
-                    old_count = int(m.group(2)) if m.group(2) else 1
-                    new_start = int(m.group(3))
-                    new_count = int(m.group(4)) if m.group(4) else 1
-                diff_lines = []
-            elif in_diff and line.startswith("---"):
-                in_diff = False
-                # Process the diff
-                idx = old_start - 1  # 0-indexed
-                add_lines = []
-                for dl in diff_lines:
-                    if dl.startswith("-"):
-                        # Delete
-                        if idx < len(patched_lines):
-                            patched_lines.pop(idx)
-                    elif dl.startswith("+"):
-                        # Insert
-                        add_lines.append(dl[1:])
-                        patched_lines.insert(idx, dl[1:])
-                        idx += 1
-                    elif dl.startswith(" "):
-                        idx += 1
+                if not m:
+                    i += 1
+                    continue
+                old_start = int(m.group(1))
+                old_count = int(m.group(2)) if m.group(2) else 1
+                new_start = int(m.group(3))
+                new_count = int(m.group(4)) if m.group(4) else 1
                 
-                # Write back
-                with open(p, "w") as f:
-                    f.writelines(patched_lines)
-                return f"OK: Applied diff to {p} ({old_count} lines removed, {len(add_lines)} added)"
-            elif in_diff:
-                diff_lines.append(line)
+                # Collect hunk content until next hunk or end (excluding trailing empty)
+                hunk_content = []
+                i += 1
+                while i < len(diff_lines):
+                    line = diff_lines[i]
+                    if line.startswith("@@ "):
+                        i -= 1  # Back up to re-process this hunk header
+                        break
+                    hunk_content.append(line)
+                    i += 1
+                
+                # Filter out trailing empty strings from split
+                while hunk_content and hunk_content[-1] == "":
+                    hunk_content.pop()
+                
+                hunks.append({
+                    'old_start': old_start,
+                    'old_count': old_count,
+                    'new_start': new_start,
+                    'new_count': new_count,
+                    'content': hunk_content
+                })
+            else:
+                i += 1
         
-        # If we get here, the diff format might be different - try line-by-line
+        if not hunks:
+            return f"ERROR: No valid hunks found in diff for {p}"
+        
+        # Work on a copy of original lines
         patched_lines = original_lines[:]
-        idx = 0
-        adds = []
-        dels = []
         
-        for line in lines:
-            if line.startswith("@@"):
+        # Track success/failure per hunk
+        hunk_results = []
+        total_removed = 0
+        total_added = 0
+        
+        for hunk_idx, hunk in enumerate(hunks):
+            old_start = hunk['old_start']
+            old_count = hunk['old_count']
+            new_count = hunk['new_count']
+            hunk_content = hunk['content']
+
+            # 1. Classify each hunk line
+            # hunk_lines: list of (type, text) where type in {'ctx', 'del', 'add'}
+            hunk_lines = []
+            for hl in hunk_content:
+                if hl.startswith("-"):
+                    hunk_lines.append(("del", hl[1:]))
+                elif hl.startswith("+"):
+                    hunk_lines.append(("add", hl[1:]))
+                else:
+                    hunk_lines.append(("ctx", hl[1:] if len(hl) > 1 else ""))
+
+            # 2. Walk through hunk_lines with a cursor into patched_lines
+            # Verify context lines, record where adds/deletes/replacements happen
+            # For new files (old_start=0), cursor starts at 0 (append mode)
+            cursor = max(0, old_start - 1)  # 0-indexed position in patched_lines
+            edits = []  # list of (pos, new_text_or_None) — None = delete, str = replace
+            conflict = False  # must initialize even if hunk_lines is empty
+
+            i = 0
+            while i < len(hunk_lines):
+                kind, text = hunk_lines[i]
+                if kind == "ctx":
+                    # Context must match
+                    if cursor >= len(patched_lines) or patched_lines[cursor] != text:
+                        hunk_results.append(f"hunk {hunk_idx+1}: CONFLICT (context at pos {cursor} expected '{text}', got '{patched_lines[cursor] if cursor < len(patched_lines) else 'EOF'}')")
+                        conflict = True
+                        break
+                    cursor += 1
+                    i += 1
+                elif kind == "del":
+                    # Verify deletion matches
+                    if cursor >= len(patched_lines) or patched_lines[cursor] != text:
+                        hunk_results.append(f"hunk {hunk_idx+1}: CONFLICT (delete at pos {cursor} expected '{text}', got '{patched_lines[cursor] if cursor < len(patched_lines) else 'EOF'}')")
+                        conflict = True
+                        break
+                    # Check if next hunk_line is an add (replacement)
+                    if i + 1 < len(hunk_lines) and hunk_lines[i + 1][0] == "add":
+                        replacement_text = hunk_lines[i + 1][1]
+                        edits.append(("rep", cursor, replacement_text))  # replace
+                        i += 2  # consume both del and add
+                    else:
+                        edits.append(("del", cursor, None))  # pure delete
+                        i += 1
+                    cursor += 1
+                elif kind == "add":
+                    # Pure add: insert "text" at current cursor position (before cursor)
+                    edits.append(("ins", cursor, text))  # insert before cursor
+                    i += 1
+                    # cursor does NOT advance — next item goes after inserted text
+                elif kind == "rep":
+                    # Replacement at current cursor position (overwrite the old line)
+                    edits.append(("rep", cursor, text))  # replace at cursor
+                    i += 1
+                    cursor += 1
+
+            if conflict:
                 continue
-            elif line.startswith("-"):
-                if idx < len(patched_lines):
-                    dels.append((idx, patched_lines[idx]))
-                    idx += 1
-            elif line.startswith("+"):
-                adds.append(line[1:])
-            elif line.startswith(" ") or line == "":
-                idx += 1
+
+            # 3. Apply edits in reverse order
+            replacements = [(pos, text) for op, pos, text in edits if op == "rep"]
+            insertions = [(pos, text) for op, pos, text in edits if op == "ins"]
+            deletions = [(pos, None) for op, pos, text in edits if op == "del"]
+
+            # Apply replacements (overwrite in-place)
+            for edit_pos, edit_text in replacements:
+                if 0 <= edit_pos < len(patched_lines):
+                    patched_lines[edit_pos] = edit_text
+
+            # Apply deletions in reverse order (pop shifts indices)
+            for edit_pos, _ in sorted(deletions, key=lambda x: x[0], reverse=True):
+                if 0 <= edit_pos < len(patched_lines):
+                    patched_lines.pop(edit_pos)
+
+            # Apply insertions: to preserve insertion order, use a position-aware insertion index.
+            # When multiple items are inserted at the same conceptual position, earlier insertions
+            # in the hunk should appear BEFORE later ones. We achieve this by counting how many
+            # insertions we've already done at lower positions.
+            # insertion_index = insert_pos + count_of_insertions_at_lower_positions
+            # Process in ascending order so that earlier items are inserted first.
+            sorted_insertions = sorted(insertions, key=lambda x: x[0])
+            insert_count_at_pos = {}
+            for insert_pos, insert_text in sorted_insertions:
+                # How many insertions already done at positions <= insert_pos?
+                count_before = sum(v for p, v in insert_count_at_pos.items() if p <= insert_pos)
+                actual_idx = insert_pos + count_before
+                actual_idx = min(actual_idx, len(patched_lines))  # clamp to end
+                patched_lines.insert(actual_idx, insert_text)
+                insert_count_at_pos[insert_pos] = insert_count_at_pos.get(insert_pos, 0) + 1
+
+            total_removed += len(replacements) + sum(1 for op, _, _ in edits if op == "del")
+            total_added += len(replacements) + len(insertions)
+            hunk_results.append(f"hunk {hunk_idx+1}: OK")
         
-        # Apply deletions in reverse to not shift indices
-        for idx, _ in reversed(dels):
-            patched_lines.pop(idx)
+        # Check if any hunks failed
+        failed_hunks = [r for r in hunk_results if "FAILED" in r or "CONFLICT" in r]
         
-        # Apply additions
-        for i, line in enumerate(adds):
-            patched_lines.insert(dels[0][0] if dels else 0 + i, line)
+        # Write result if we made any progress
+        if total_removed > 0 or total_added > 0:
+            with open(p, "w") as f:
+                for line in patched_lines:
+                    f.write(line + "\n")
         
-        with open(p, "w") as f:
-            f.writelines(patched_lines)
-        
-        return f"OK: Applied diff to {p}"
+        # Build result message
+        if not failed_hunks:
+            return f"OK: Applied diff to {p} ({len(hunks)} hunks, {total_removed} lines removed, {total_added} added)"
+        elif total_removed == 0 and total_added == 0:
+            return f"ERROR: No hunks could be applied to {p}. Conflicts or context mismatches detected.\n" + "\n".join(hunk_results)
+        else:
+            # Partial success
+            return f"PARTIAL: Applied {len(hunks) - len(failed_hunks)}/{len(hunks)} hunks to {p} ({total_removed} lines removed, {total_added} added)\nHunk results:\n" + "\n".join(hunk_results)
     
     def _tdd_test(self, test_path: str, impl_path: str, test_code: str, impl_code: str) -> str:
         """Write test + implementation, run test."""
