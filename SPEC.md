@@ -1,403 +1,364 @@
-# Nexus — Next-Generation Autonomous Coding Agent
+# SPEC — Nexus 规格说明书
 
-## Vision Statement
-
-Nexus is an autonomous coding agent that surpasses claude-code in reliability, autonomy, and code quality. It combines the best of claude-code's thoughtful architecture, Codex's speed, and opencode's openness, while introducing novel orchestration patterns (RalphLoop), genuine multi-agent specialization, and continuous self-improvement. The ultimate measure of success: when a senior engineer can trust Nexus to implement a complex feature end-to-end — spec → code → tests → review → commit — without intervention.
-
----
-
-## 1. Competitive Analysis
-
-### 1.1 Claude Code (Anthropic)
-
-| Dimension | Strengths | Weaknesses |
-|-----------|-----------|------------|
-| **Architecture** | Subagent system, hooks, CLAUDE.md memory, MCP integration | No true parallel execution of independent tasks |
-| **Context** | Strong context management, `/compact` to reduce | Still leaks context; no formal budget discipline |
-| **Verification** | `/review`, `/security-review` commands | No automatic verification gate before commit |
-| **TDD** | Supports but doesn't enforce | No mandatory test-first discipline |
-| **Self-correction** | Can rewind, resume sessions | No systematic error recovery protocol |
-| **Multi-model** | Sonnet/Opus/Haiku switching mid-session | No task-model routing based on complexity |
-| **Learning** | Auto-memory per project | No cross-session pattern learning |
-| **Reliability** | Solid, predictable | Loop runaway possible without `--max-turns` |
-
-### 1.2 Codex (OpenAI)
-
-| Dimension | Strengths | Weaknesses |
-|-----------|-----------|------------|
-| **Speed** | Very fast execution | Quality inconsistent |
-| **Git integration** | Deep worktree support | No review workflow |
-| **Modes** | `--full-auto`, `--yolo` flexibility | Yolo mode too dangerous; full-auto approval confusion |
-| **Multi-agent** | Built-in agent teams | Unstructured, no specialization |
-| **Context** | Good with large diffs | No structured context budgeting |
-| **Verification** | PR review command | No automated test enforcement |
-
-### 1.3 OpenCode
-
-| Dimension | Strengths | Weaknesses |
-|-----------|-----------|------------|
-| **Provider agnostic** | Works with any LLM | No model intelligence optimization |
-| **Open source** | Transparency | Less polish than proprietary |
-| **Session management** | Good session list/stats | No structured learning across sessions |
-| **CLI ergonomics** | Clean `run` vs interactive modes | No TDD enforcement |
-| **Review** | Built-in PR review | No security scanning automation |
+> **版本**：v4（统一版，合并 v2 + v3）
+> **最后更新**：2026-05-04
+> **状态**：RalphLoop 核心完成，act-e2e 阶段
 
 ---
 
-## 2. Ultimate Goal & Key Differentiators
+## 背景与目标
 
-**Ultimate Goal:** A coding agent that a senior engineer can trust to implement complex features autonomously — from understanding requirements to verified, committed code — with quality that meets or exceeds what the senior engineer would produce.
+Nexus 是基于 **RalphLoop 状态机** 的自进化编程智能体，核心目标是：
 
-### Key Differentiators (vs Claude Code)
-
-| # | Differentiator | Why It Matters |
-|---|----------------|----------------|
-| D1 | **RalphLoop Orchestration** | Closed-loop self-correction with explicit state machine transitions (Plan→Act→Verify→Reflect). No silent failures. |
-| D2 | **Task-Model Routing** | Trivial tasks use Haiku-equivalent; complex reasoning uses Sonnet/Opus. Cost-efficiency without sacrificing quality. |
-| D3 | **Mandatory TDD Gate** | Every implementation task must produce tests BEFORE code. Red-Green-Refactor enforced by orchestration. |
-| D4 | **Multi-Agent Specialization** | Separate agents for: Planner, Implementer, Reviewer, Security Auditor, Performance Analyzer. Each expert in their domain. |
-| D5 | **Cross-Session Pattern Memory** | Learned patterns stored in durable skill format. Mistakes from session A prevent failures in session B. |
-| D6 | **Formal Context Budget Discipline** | Four-tier degradation model (PEAK/GOOD/DEGRADING/POOR) with explicit gate actions at each tier. |
-| D7 | **Structured Self-Improvement** | After each task: capture what worked, what failed, update skill library. The agent gets genuinely better over time. |
-| D8 | **Verification Before Commit** | No code is committed without passing: security scan + lint + tests + review. Every commit is verified. |
-| D9 | **Escalation Protocol** | When RalphLoop exhausts retries, explicit escalation to human with concrete options — never silent failure or infinite loop. |
-| D10 | **Deterministic Output** | Same task with same context produces consistent, reproducible results. No randomness in quality. |
+1. **达到** Claude Code 的核心体验完整度（文件操作、Git、安全扫描、项目感知）
+2. **超越** Claude Code 通过：TDD 强制、多 Agent 协作、自进化技能、状态可见性
 
 ---
 
-## 3. Architecture
-
-### 3.1 RalphLoop — The Core Orchestration Engine
+## 架构总览
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         NEXUS RalphLoop                             │
-│                                                                     │
-│   ┌─────────┐    ┌──────────┐    ┌─────────┐    ┌──────────┐        │
-│   │  PLAN   │───▶│   ACT    │───▶│ VERIFY  │───▶│ REFLECT  │        │
-│   │  state  │    │  state   │    │  state  │    │  state   │        │
-│   └────┬────┘    └────┬─────┘    └────┬────┘    └────┬─────┘        │
-│        │              │               │              │              │
-│        │   ┌──────────┘               │              │              │
-│        │   │     error/verify fail   │              │              │
-│        │   ▼                          ▼              │              │
-│        │   ───────────────────────────────           │              │
-│        │         retry up to 3x         ────────────┤              │
-│        │   ───────────────────────────────           │              │
-│        │                                       ┌─────┴─────┐        │
-│        └───────────────────────────────────────▶│  COMMIT   │        │
-│                                                  │  (done)   │        │
-│                                                  └───────────┘        │
-└─────────────────────────────────────────────────────────────────────┘
+User Input
+    ↓
+[CLAUDE.md 三层合并]
+    ↓
+RalphLoop Orchestrator（状态机编排）
+    ├── PLAN     → 分析任务 → 拆解为原子步骤
+    ├── ACT      → 调用 LLM → 解析 ToolCall → 执行工具
+    ├── VERIFY   → TDD Gate → 安全扫描 → 测试验证
+    └── REFLECT  → 捕获错误 → 判断重试/升级/放弃
+    ↓
+Git Commit（可选）
 ```
-
-**State Machine Rules:**
-
-| Transition | Trigger | Action |
-|------------|---------|--------|
-| PLAN → ACT | Valid spec produced | Dispatch implementer subagent |
-| ACT → VERIFY | Implementation complete | Run TDD gate + reviewer subagent |
-| VERIFY → REFLECT | Verification passed | Analyze patterns, capture learnings |
-| VERIFY → PLAN | Verification failed (≤3 retries) | Revise spec based on error feedback |
-| VERIFY → ESCALATE | 3 consecutive verify failures | Human decision required |
-| REFLECT → PLAN | Next task in queue | Continue to next task |
-| REFLECT → COMMIT | All tasks done | Final review, commit |
-| Any → ABORT | Context budget POOR tier | Checkpoint, stop, report |
-
-### 3.2 Multi-Agent Specialization
-
-```
-                    ┌──────────────────────┐
-                    │   Nexus Orchestrator  │
-                    │   (RalphLoop State    │
-                    │    Machine Control)   │
-                    └──────────┬───────────┘
-                               │ dispatches specialized agents
-          ┌────────────────────┼────────────────────┐
-          ▼                    ▼                    ▼
-  ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-  │   SPECIFIER   │    │  IMPLEMENTER  │    │   REVIEWER    │
-  │ - Understand  │    │ - TDD enforce │    │ - Spec check  │
-  │   requirements│    │ - Write code  │    │ - Quality gate│
-  │ - Write spec  │    │ - Run tests   │    │ - Logic errors│
-  └───────────────┘    └───────────────┘    └───────────────┘
-          │                    │                    │
-          └────────────────────┼────────────────────┘
-                               ▼
-                    ┌──────────────────────┐
-                    │  SECURITY AUDITOR     │
-                    │  - Scan for secrets  │
-                    │  - SQL/XSS injection  │
-                    │  - Path traversal    │
-                    └──────────────────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  PERFORMANCE ANALYZER│
-                    │  - Algorithmic compex│
-                    │  - Query optimization│
-                    └──────────────────────┘
-```
-
-**Agent Communication Protocol:**
-- Each agent receives a structured context block (never unbounded)
-- Agents return typed responses with confidence scores
-- No agent reviews its own work (independence enforced)
-- All inter-agent communication goes through orchestrator
-
-### 3.3 Skill Memory System
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Nexus Skill Library                        │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │  Language    │  │  Framework   │  │   Domain     │     │
-│  │  Skills      │  │  Skills      │  │  Skills      │     │
-│  │  ──────────  │  │  ──────────  │  │  ──────────  │     │
-│  │  • Python    │  │  • FastAPI    │  │  • Auth      │     │
-│  │  • TypeScript│  │  • React      │  │  • Payments  │     │
-│  │  • Rust      │  │  • PostgreSQL │  │  • ML Pipelines│   │
-│  └──────────────┘  └──────────────┘  └──────────────┘     │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │  Pattern     │  │   Mistake    │  │   Project     │     │
-│  │  Skills      │  │   Capture    │  │   Context     │     │
-│  │  ──────────  │  │  ──────────  │  │  ──────────  │     │
-│  │  • Auth flow │  │  • What went │  │  • CLAUDE.md │     │
-│  │  • Error hndl│  │    wrong     │  │  • Commands  │     │
-│  │  • API design│  │  • How to fix│  │  • Standards │     │
-│  └──────────────┘  └──────────────┘  └──────────────┘     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Self-Improvement Protocol:**
-1. After each task, Reviewer identifies what patterns emerged
-2. Reflect agent extracts mistakes → writes to Mistake Capture
-3. Implementer agents query relevant skills before starting
-4. New patterns auto-authored as skills via skill_manage
 
 ---
 
-## 4. Verification System
+## 核心组件
 
-### 4.1 TDD Enforcement Gate
+### RalphLoop Orchestrator
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `orchestrator.py` | 479 | 主引擎：状态转换、恢复、超时 |
+| `agent_loop.py` | 580 | LLM 闭环：PLAN→ACT→VERIFY→REFLECT 各状态的实际执行 |
+| `tdd_enforcer.py` | 528 | TDD 强制：RED→GREEN→REFACTOR 循环 |
+| `transitions.py` | 287 | 转换表 + 守卫条件 |
+| `states.py` | ~43 | 8 状态枚举 |
+| `subagent_registry.py` | 259 | 5 专业 Agent 定义 |
+| `subagent_integration.py` | 485 | Orchestrator ↔ delegate_task 桥接 |
+| `claude_md_loader.py` | 296 | CLAUDE.md 发现 + 项目根检测 + LLM 系统提示构建 |
+
+### Multi-Agent 系统
+
+| Agent | 行数 | 职责 |
+|-------|------|------|
+| `specifier.py` | ~150 | 需求 → SPEC.md |
+| `implementer.py` | ~200 | 代码生成 + TDD 执行 |
+| `reviewer.py` | 504 | 质量门 |
+| `security.py` | 676 | 安全扫描 |
+| `agents/base.py` | ~100 | Agent 基类 |
+
+### Verification Pipeline
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `tdd_gate.py` | 526 | RED→GREEN→REFACTOR 门 |
+| `test_gate.py` | 596 | pytest 执行 + 基线对比 |
+| `security_scan.py` | 650 | 密钥/注入/路径遍历扫描 |
+| `review_gate.py` | 690 | 独立代码审查 |
+| `pipeline.py` | 621 | 管道编排 |
+
+### Context Management
+
+| 文件 | 职责 |
+|------|------|
+| `monitor.py` | 4-tier 预算监控（PEAK/GOOD/DEGRADING/POOR） |
+| `claudemd.py` | CLAUDE.md 三层合并 |
+| `checkpoint.py` | 状态检查点 |
+| `worktree.py` | Git Worktree 管理 |
+
+### TUI
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `nexus_tui.py` | 594 | ANSI 实时仪表盘 |
+| `app.py` | 567 | Rich Live 主应用 |
+
+### MCP
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `client.py` | 663 | 异步生命周期管理 |
+| `bridge.py` | 644 | 工具桥 + 缓存 + 限流 |
+| `presets.py` | ~100 | GitHub/Slack/PostgreSQL 预设 |
+
+### LLM
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `client.py` | 829 | Anthropic/OpenAI/Ollama 统一接口 |
+
+---
+
+## RalphLoop 状态机
+
+### 状态定义
+
+```
+IDLE → PLAN → ACT → VERIFY → REFLECT → (TRANSIT) → PLAN...
+         ↓       ↓       ↓         ↓
+      ESCALATE COMMIT   ABORT    TRANSIT
+```
+
+### 状态详情
+
+| 状态 | 入口条件 | 动作 | 出口条件 |
+|------|---------|------|---------|
+| **IDLE** | 初始/任务完成 | 加载上下文 | 用户输入 |
+| **PLAN** | IDLE + 用户任务 | 拆解任务步骤，识别 CLAUDE.md | 步骤队列 |
+| **ACT** | PLAN 完成 | LLM 调用 → ToolCall 执行 | 工具结果 |
+| **VERIFY** | ACT 完成 | TDD Gate / Security / Test | 通过/失败 |
+| **REFLECT** | VERIFY 完成 | 错误模式捕获，决策 | 重试/升级/提交 |
+| **ESCALATE** | 任何状态 | 4 选项：(1)自行修复 (2)求助 (3)简化 (4)放弃 | 返回 ACT/IDLE |
+| **COMMIT** | REFLECT 通过 | git add + commit | IDLE |
+| **ABORT** | VERIFY 失败 | 保存检查点，回滚 | IDLE |
+
+### TDD 强制门
 
 ```
 Task Received
-     │
-     ▼
-┌─────────────────────────────────────┐
-│ 1. Write Failing Test (RED)        │
-│    - Test must fail before code    │
-│    - Test quality gate: must test   │
-│      behavior, not implementation  │
-└──────────────┬──────────────────────┘
-               ▼
-┌─────────────────────────────────────┐
-│ 2. Run Test → MUST FAIL            │
-│    - Fail = test is valid          │
-│    - Pass = test is tautological   │
-│      (auto-reject, rewrite)        │
-└──────────────┬──────────────────────┘
-               ▼
-┌─────────────────────────────────────┐
-│ 3. Write Minimal Implementation    │
-│    (GREEN)                          │
-└──────────────┬──────────────────────┘
-               ▼
-┌─────────────────────────────────────┐
-│ 4. Run Tests → MUST PASS           │
-└──────────────┬──────────────────────┘
-               ▼
-┌─────────────────────────────────────┐
-│ 5. Refactor (REFACTOR)              │
-│    - Maintain all tests passing    │
-│    - No new functionality           │
-└──────────────┬──────────────────────┘
-               ▼
-         VERIFY PASS
+    ↓
+┌─────────────────┐
+│  Write RED Test │  ← LLM 生成测试（预期失败）
+└────────┬────────┘
+         ↓
+┌─────────────────┐
+│  Run RED        │  ← pytest 确认失败
+└────────┬────────┘
+         ↓
+┌─────────────────┐
+│  Write GREEN    │  ← LLM 生成实现（最小代码）
+└────────┬────────┘
+         ↓
+┌─────────────────┐
+│   Run GREEN     │  ← pytest 确认通过
+└────────┬────────┘
+         ↓
+┌─────────────────┐
+│  REFACTOR       │  ← 改进代码质量
+└────────┬────────┘
+         ↓
+┌─────────────────┐
+│  Final Tests    │  ← 确认重构后仍然通过
+└────────┬────────┘
+         ↓
+      COMMIT
 ```
 
-### 4.2 Pre-Commit Verification Pipeline
+### 上下文预算模型
 
-Before any `git commit`:
-
-1. **Security Scan** (auto-FAIL on any finding)
-   - Hardcoded secrets (API keys, passwords, tokens)
-   - Shell injection (`os.system`, `shell=True`)
-   - SQL injection (string formatting in queries)
-   - Path traversal
-   - Dangerous deserialization (`pickle.loads`, `eval`)
-
-2. **Test Gate** (baseline comparison)
-   - Run full test suite
-   - Compare against baseline failure count
-   - NEW failures = regression = block commit
-
-3. **Lint Gate** (non-blocking but reported)
-   - Auto-fix if possible
-   - Manual review if not
-
-4. **Independent Review** (fresh subagent)
-   - Passes ONLY if: no security concerns AND no logic errors
-   - Suggestions are non-blocking
+| Tier | 消耗 | 行为 |
+|------|------|------|
+| **PEAK** | 0-30% | 全速推理，并行 Agent |
+| **GOOD** | 30-50% | 正常执行 |
+| **DEGRADING** | 50-70% | 减少探索，聚焦已知路径 |
+| **POOR** | 70-100% | 紧急检查点，建议升级 |
 
 ---
 
-## 5. Context Budget Discipline
+## Subagent 专业分工
 
-### 5.1 Four-Tier Monitoring
+| Agent | 输入 | 输出 | 关键能力 |
+|-------|------|------|---------|
+| **Specifier** | 用户任务描述 | SPEC.md / CLAUDE.md 片段 | 需求澄清、规格生成 |
+| **Implementer** | SPEC + 上下文 | 代码 + 工具调用 | TDD 强制、工具执行 |
+| **Reviewer** | 代码 + 测试 | Review 报告 | 质量门、代码审查 |
+| **Security** | 代码 | 漏洞报告 | 密钥/注入/路径遍历 |
+| **Test** | SPEC | RED 测试代码 | 测试生成 |
 
-| Tier | Usage | Orchestrator Action |
-|------|-------|---------------------|
-| **PEAK** (0-30%) | Full operations | Spawn parallel agents, read freely |
-| **GOOD** (30-50%) | Normal operations | Prefer frontmatter reads |
-| **DEGRADING** (50-70%) | Economize | Frontmatter-only, minimal inlining, warn user |
-| **POOR** (70%+) | Emergency | Checkpoint immediately, complete current task, stop |
-
-### 5.2 Context Budget Actions
-
-- At **DEGRADING**: Send user warning, begin limiting subagent outputs
-- At **POOR**: Trigger [Abort gate](gates-taxonomy) — checkpoint progress, stop all operations
-- Subagent outputs: Read frontmatter only (verdict/summary), not full bodies
-- Large artifacts: Store to disk, subagent reads from disk
-
----
-
-## 6. Escalation Protocol
-
-When the RalphLoop exhausts retries (3x on same task):
+### 并行执行模式
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                 ESCALATION GATE                          │
-│                                                         │
-│  Situation: 3 consecutive failures on task: [task]    │
-│                                                         │
-│  Options presented to human:                           │
-│                                                         │
-│  1. FORCE-MERGE: Accept current state, manual review   │
-│  2. REWRITE: Discard and re-spec from scratch          │
-│  3. ABANDON: Skip task, continue with remaining tasks  │
-│  4. DECOMPOSE: Break task into smaller subtasks        │
-│                                                         │
-│  Human selects → workflow resumes on chosen path       │
-└─────────────────────────────────────────────────────────┘
+用户任务
+    ↓
+SpecifierAgent（串行：先理解需求）
+    ↓
+┌──────────────────────────────────────┐
+│ ImplementerAgent（主）                │
+│   + ReviewerAgent（并行）            │
+│   + SecurityAgent（并行）            │
+│   + TestAgent（并行）                │
+└──────────────────────────────────────┘
+    ↓
+RalphLoop REFLECT → 决策
 ```
 
-**Never:** Loop forever, guess silently, or produce silently wrong code.
-
 ---
 
-## 7. Skill Self-Authoring
-
-After each completed task, Nexus automatically:
-
-1. **Captures Mistake Patterns**
-   - What went wrong during implementation?
-   - What error patterns appeared in tests?
-   - What edge cases were missed?
-
-2. **Authors Recovery Skills**
-   - When a bug pattern is identified, a skill is written
-   - Format: trigger condition → diagnosis → fix
-   - Next occurrence: agent loads skill, applies fix directly
-
-3. **Updates Project Context**
-   - Updates CLAUDE.md-equivalent with new learnings
-   - Records command aliases, project conventions
-   - Captures architectural decisions
-
----
-
-## 8. Implementation Plan
-
-### Phase 1: Core Infrastructure
-- RalphLoop state machine implementation
-- Basic orchestration (Plan→Act→Verify→Reflect cycle)
-- Single-agent mode (no parallelism yet)
-
-### Phase 2: Multi-Agent Specialization
-- Implementer, Reviewer, Security Auditor agents
-- Agent communication protocol
-- Independent verification (no self-review)
-
-### Phase 3: TDD Enforcement
-- Red-Green-Refactor gate
-- Test-before-code discipline
-- Test quality validation
-
-### Phase 4: Self-Improvement
-- Mistake capture system
-- Skill auto-authoring
-- Cross-session pattern memory
-
-### Phase 5: Context Budget Discipline
-- Four-tier monitoring
-- Proactive warning system
-- Abort gate implementation
-
-### Phase 6: Testing & Comparison
-- Benchmark against claude-code on identical tasks
-- Measure: reliability, quality, cost, speed
-- Gap analysis and iteration
-
----
-
-## 9. Success Metrics
-
-| Metric | Claude Code Baseline | Nexus Target |
-|--------|---------------------|--------------|
-| Task completion rate | ~85% | >95% |
-| Silent failures | Occasional | Zero (explicit state transitions) |
-| Test coverage enforcement | Optional | Mandatory per task |
-| Security issues in output | Low | Zero (scan gate) |
-| Context budget awareness | Implicit | Explicit 4-tier model |
-| Self-improvement | Per-project memory | Cross-session pattern learning |
-| TDD discipline | Suggested | Enforced |
-| Escalation clarity | N/A | Explicit options to human |
-| Commit verification | Optional | Mandatory pipeline |
-
----
-
-## 10. File Structure
+## CLAUDE.md 三层合并
 
 ```
-nexus/
-├── src/
-│   ├── ralphloop/           # RalphLoop state machine
-│   │   ├── __init__.py
-│   │   ├── states.py        # State definitions
-│   │   ├── transitions.py   # State transition logic
-│   │   └── orchestrator.py # Main orchestration engine
-│   ├── agents/              # Specialized agents
-│   │   ├── __init__.py
-│   │   ├── specifier.py     # Requirements → spec
-│   │   ├── implementer.py   # Spec → code + tests
-│   │   ├── reviewer.py      # Quality gate
-│   │   ├── security.py      # Security scan
-│   │   └── performance.py   # Performance analysis
-│   ├── skills/              # Skill memory system
-│   │   ├── __init__.py
-│   │   ├── capture.py       # Mistake capture
-│   │   ├── author.py        # Skill authoring
-│   │   └── loader.py        # Skill loading
-│   ├── verification/        # Verification pipelines
-│   │   ├── __init__.py
-│   │   ├── tdd_gate.py      # TDD enforcement
-│   │   ├── security_scan.py # Security scanning
-│   │   ├── test_gate.py     # Test execution
-│   │   └── review_gate.py   # Independent review
-│   └── context/             # Context budget management
-│       ├── __init__.py
-│       ├── monitor.py       # Budget tier monitoring
-│       └── checkpoint.py    # State checkpointing
-├── tests/
-│   ├── ralphloop/
-│   ├── agents/
-│   └── integration/
-├── nexus.py                 # Main CLI entry point
-├── pyproject.toml
-└── README.md
+~/.claude/CLAUDE.md        ← 全局规范（工具偏好、安全策略）
+project/CLAUDE.md          ← 项目规范（架构决策、约定）
+directory/.CLAUDE.md       ← 目录规范（模块规则）
+        ↓
+    build_llm_system_prompt()
+        ↓
+    注入 LLM System Prompt
 ```
+
+---
+
+## 关键差异（vs Claude Code）
+
+| 能力 | Claude Code | Nexus |
+|------|------------|-------|
+| TDD Enforcement | ❌ 无 | ✅ RED→GREEN→REFACTOR 强制 |
+| 多 Agent 协作 | ❌ 无 | ✅ 5 专业 Agent 并行 |
+| RalphLoop 状态可见性 | ❌ 黑盒 | ✅ PLAN→ACT→VERIFY→REFLECT |
+| 上下文预算感知 | ❌ 隐式 | ✅ 4-tier 显式监控 |
+| 自进化技能系统 | ❌ 无 | ✅ 错误→技能捕获 |
+| 跨会话 Checkpoint | ❌ 无 | ✅ SQLite 持久化 |
+| Skill 系统集成 | ❌ 无 | ✅ Hermes Skill Hub |
+
+---
+
+## 执行计划（已完成 vs 待办）
+
+### ✅ 已完成（里程碑）
+
+| 里程碑 | 内容 | 状态 |
+|--------|------|------|
+| **act-realagents** | RalphLoop orchestrator 真正调用 subagent | ✅ 7/7 测试通过 |
+| **feat-subagent-arch** | subagent registry + CLAUDE.md loader + TUI | ✅ 97ba2dc |
+
+### 🔄 当前（act-e2e）
+
+| 任务 | 内容 |
+|------|------|
+| **act-e2e** | 端到端：用 Nexus 开发一个 REST API（FastAPI） |
+
+### 📋 规划（verify-gap）
+
+| 任务 | 内容 |
+|------|------|
+| **verify-gap** | 在 10 个任务上与 Claude Code 对比 |
+
+---
+
+## 验收标准
+
+### act-e2e 验收
+
+1. `nexus run --task "Build a REST API with FastAPI"` 能完整执行：
+   - 自动生成 SPEC.md
+   - TDD RED 测试
+   - TDD GREEN 实现
+   - pytest 全部通过
+   - Git commit
+
+2. TUI 实时显示：PLAN→ACT→VERIFY→REFLECT 状态
+
+### verify-gap 验收
+
+1. 同等任务完成率 ≥ Claude Code
+2. TDD 覆盖率 > 80%（Claude Code = 0%）
+3. 多 Agent 协作任务占比 > 50%
+
+---
+
+## 文件清单（src/）
+
+```
+src/
+├── ralphloop/           # 状态机引擎（~3300行）
+│   ├── __init__.py
+│   ├── orchestrator.py
+│   ├── agent_loop.py
+│   ├── tdd_enforcer.py
+│   ├── transitions.py
+│   ├── states.py
+│   ├── subagent_registry.py
+│   ├── subagent_integration.py
+│   └── claude_md_loader.py
+├── agents/              # 多智能体（~1600行）
+│   ├── __init__.py
+│   ├── base.py
+│   ├── specifier.py
+│   ├── implementer.py
+│   ├── reviewer.py
+│   └── security.py
+├── verification/        # 验证管道（~3000行）
+│   ├── __init__.py
+│   ├── tdd_gate.py
+│   ├── test_gate.py
+│   ├── security_scan.py
+│   ├── review_gate.py
+│   └── pipeline.py
+├── context/             # 上下文管理
+│   ├── __init__.py
+│   ├── monitor.py
+│   ├── claudemd.py
+│   ├── checkpoint.py
+│   └── worktree.py
+├── tui/                # 交互 UI（~1200行）
+│   ├── __init__.py
+│   ├── nexus_tui.py
+│   ├── app.py
+│   ├── state_view.py
+│   ├── context_view.py
+│   ├── agent_view.py
+│   └── task_view.py
+├── mcp/                # MCP 集成（~1500行）
+│   ├── __init__.py
+│   ├── client.py
+│   ├── bridge.py
+│   ├── connection.py
+│   ├── config.py
+│   ├── presets.py
+│   └── integration.py
+├── llm/                # LLM 客户端
+│   ├── __init__.py
+│   ├── client.py
+│   └── model_router.py
+├── tools/              # 工具集
+│   ├── __init__.py
+│   ├── base.py
+│   ├── bash.py
+│   ├── read.py
+│   ├── write.py
+│   ├── edit.py
+│   ├── glob.py
+│   ├── grep.py
+│   ├── git.py
+│   └── web_search.py
+├── hooks/              # 事件钩子
+│   ├── __init__.py
+│   ├── hook_manager.py
+│   ├── pre_tool_hook.py
+│   ├── post_tool_hook.py
+│   └── integration.py
+└── skills/             # 自进化技能
+    ├── __init__.py
+    └── author.py
+```
+
+---
+
+## Git 历史
+
+```
+97ba2dc feat: RalphLoop subagent architecture + CLAUDE.md loader + Nexus TUI
+416858b feat: subagent registry, CLAUDE.md loader, subagent integration layer
+fb14ea1 docs: ULTIMATE_GOAL — gap analysis vs Claude Code
+2917207 feat: RalphLoop real LLM-driven closed loop + TDD enforcement
+14bc3ad feat: robust unified diff/patch
+643baa4 feat: nexus_core.py CC Switch support
+c92a3dc feat: Nexus v2 core — RalphLoop agent + LLM tools + nexus_core.py
+fda1191 docs: rewrite README with complete feature summary
+8de8ee3 Initial commit: Nexus v1.0
+```
+
+---
+
+*SPEC 统一版 v4 — 2026-05-04*
