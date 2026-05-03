@@ -1,10 +1,10 @@
 """Interactive TUI for Nexus — rich terminal UI with RalphLoop state visualization."""
 
-from .tui.app import NexusTUI
-from .tui.state_view import StateView, StateViewState
-from .tui.context_view import ContextView, ContextViewState
-from .tui.agent_view import AgentView, AgentInfo, AgentStatus
-from .tui.task_view import TaskView, TaskInfo, TaskStatus
+from .app import NexusTUI
+from .state_view import StateView, StateViewState
+from .context_view import ContextView, ContextViewState
+from .agent_view import AgentView, AgentInfo, AgentStatus
+from .task_view import TaskView, TaskInfo, TaskStatus
 
 __all__ = [
     "NexusTUI",

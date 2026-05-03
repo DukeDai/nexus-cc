@@ -9,7 +9,7 @@ Provides a complete MCP client implementation that:
 - Supports configurable timeouts for tool calls
 
 Usage:
-    from ..mcp.config import MCPServerConfig
+    from .config import MCPServerConfig
     config = MCPServerConfig(name="github", command="npx", args=["-y", "@modelcontextprotocol/server-github"])
     client = MCPClient(config)
     await client.connect()
@@ -656,7 +656,7 @@ class MCPClient:
 # Import MCPConfig for use with this client
 # Note: MCPConfig refers to MCPServerConfig from ..mcp.config
 try:
-    from ..mcp.config import MCPServerConfig as MCPConfig
+    from .config import MCPServerConfig as MCPConfig
 except ImportError:
     # Fallback if MCPServerConfig not defined in config module
     # Will be available when config module is properly set up

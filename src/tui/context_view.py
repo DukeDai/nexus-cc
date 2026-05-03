@@ -15,7 +15,7 @@ from rich.progress import Progress, BarColumn, TextColumn, MofNCompleteColumn
 from rich.style import Style
 from rich.text import Text
 
-from ..ralphloop.orchestrator import ContextTier
+from src.ralphloop.orchestrator import ContextTier
 
 
 # ─── Tier Configuration ────────────────────────────────────────────────────────

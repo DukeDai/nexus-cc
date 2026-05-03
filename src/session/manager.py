@@ -7,9 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from ..ralphloop.orchestrator import RalphLoop
-from ..ralphloop.states import RalphState
-from ..session.models import (
+from .models import (
     AgentStateRecord,
     RalphLoopSnapshot,
     SessionData,
@@ -18,7 +16,14 @@ from ..session.models import (
     TaskRecord,
     new_session_id,
 )
-from ..session.store import SessionStore
+from .store import SessionStore
+
+
+def _get_ralphloop_classes():
+    """Lazy import to avoid top-level package issues with relative imports."""
+    from ralphloop.orchestrator import RalphLoop
+    from ralphloop.states import RalphState
+    return RalphLoop, RalphState
 
 
 class SessionManager:
@@ -85,6 +90,7 @@ class SessionManager:
         Returns:
             The new session_id string.
         """
+        _, RalphState = _get_ralphloop_classes()
         session_id = new_session_id()
         metadata = SessionMetadata(
             session_id=session_id,
@@ -111,7 +117,7 @@ class SessionManager:
     def save(
         self,
         session_id: str,
-        ralphloop: RalphLoop,
+        ralphloop: Any,
         agent_states: Optional[list[AgentStateRecord]] = None,
         context_usage: float = 0.0,
         pending_hooks: Optional[list[str]] = None,
@@ -130,6 +136,7 @@ class SessionManager:
         Returns:
             True if saved successfully, False if session not found.
         """
+        RalphLoop, RalphState = _get_ralphloop_classes()
         result = self.store.get(session_id)
         if result is None:
             return False
@@ -191,14 +198,13 @@ class SessionManager:
         if result is None:
             return None
         _, data_json = result
-        from ..session.models import SessionData as SD
-        return SD.from_dict(__import__("json").loads(data_json))
+        return SessionData.from_dict(__import__("json").loads(data_json))
 
     def restore(
         self,
         session_data: SessionData,
         context_monitor: Optional[Callable[[], float]] = None,
-    ) -> RalphLoop:
+    ) -> Any:
         """Restore a RalphLoop from session data.
 
         Args:
@@ -209,6 +215,7 @@ class SessionManager:
         Returns:
             A new RalphLoop instance in the saved state, ready to run.
         """
+        RalphLoop, RalphState = _get_ralphloop_classes()
         context_monitor = context_monitor or (
             lambda: session_data.context_usage_at_checkpoint
         )

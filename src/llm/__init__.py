@@ -2,7 +2,7 @@
 LLM module for multi-provider LLM support.
 """
 
-from src.llm.client import (
+from .client import (
     APIError,
     AuthError,
     LLMClient,

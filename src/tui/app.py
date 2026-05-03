@@ -10,7 +10,7 @@ Provides real-time updates via Rich Live display and integrates
 with RalphLoop via on_state_change, on_warning, on_escalation callbacks.
 
 Usage:
-    from ..tui.app import NexusTUI
+    from .app import NexusTUI
 
     tui = NexusTUI(
         task_queue=[...],
@@ -35,17 +35,17 @@ from rich.screen import Screen
 from rich.text import Text
 from rich.live import Live
 
-from ..ralphloop.states import RalphState
-from ..ralphloop.orchestrator import (
+from src.ralphloop.states import RalphState
+from src.ralphloop.orchestrator import (
     RalphLoop,
     ContextTier,
     EscalationOption,
     Checkpoint,
 )
-from ..tui.state_view import StateView
-from ..tui.agent_view import AgentView, AgentStatus
-from ..tui.context_view import ContextView
-from ..tui.task_view import TaskView
+from .state_view import StateView
+from .agent_view import AgentView, AgentStatus
+from .context_view import ContextView
+from .task_view import TaskView
 
 
 # ─── Console Configuration ─────────────────────────────────────────────────────
@@ -233,7 +233,7 @@ class NexusTUI:
 
     def _get_agent_for_state(self, state: RalphState):
         """Map RalphState to AgentRole."""
-        from ..agents.base import AgentRole
+        from src.agents.base import AgentRole
 
         mapping = {
             RalphState.PLAN: AgentRole.SPECIFIER,

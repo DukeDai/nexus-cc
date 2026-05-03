@@ -4,7 +4,7 @@ This module provides adapters to integrate the hook system with RalphLoop's
 existing callbacks (on_state_change, on_warning, on_escalation).
 
 Usage:
-    from ..hooks.integration import RalphLoopHookAdapter
+    from .integration import RalphLoopHookAdapter
 
     adapter = RalphLoopHookAdapter(hook_manager)
     adapter.attach_to_orchestrator(orchestrator)
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from ..hooks.hook_manager import HookEvent, HookManager, HookContext
+from .hook_manager import HookEvent, HookManager, HookContext
 
 
 class RalphLoopHookAdapter:
@@ -201,7 +201,7 @@ class HookAwareOrchestrator:
     Use as a mixin with RalphLoop or wrap an existing orchestrator.
 
     Example:
-        from ..ralphloop.orchestrator import RalphLoop
+        from src.ralphloop.orchestrator import RalphLoop
 
         # Wrap existing orchestrator
         aware = HookAwareOrchestrator(orchestrator, hook_manager)
