@@ -13,16 +13,47 @@ from dataclasses import dataclass, field
 
 # ─── LLM Client ─────────────────────────────────────────────────────────────────
 
+def _load_claude_settings() -> dict:
+    """Load Claude/CC Switch environment settings from ~/.claude/settings.json."""
+    settings_path = Path.home() / ".claude" / "settings.json"
+    if settings_path.exists():
+        try:
+            import json
+            with open(settings_path) as f:
+                settings = json.load(f)
+            return settings.get("env", {})
+        except:
+            pass
+    return {}
+
+
 def _detect_provider() -> tuple[str, str]:
-    """Auto-detect the best available LLM provider from environment."""
-    # Priority: Anthropic > OpenAI > Ollama (local)
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return "anthropic", os.environ["ANTHROPIC_API_KEY"]
+    """Auto-detect the best available LLM provider from environment or Claude settings."""
+    settings = _load_claude_settings()
+    
+    # Priority: Claude settings (CC Switch) > env vars > Ollama
+    auth_token = (settings.get("ANTHROPIC_AUTH_TOKEN") or 
+                  os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+    api_key = (settings.get("ANTHROPIC_API_KEY") or
+               os.environ.get("ANTHROPIC_API_KEY"))
+    base_url = (settings.get("ANTHROPIC_BASE_URL") or
+                os.environ.get("ANTHROPIC_BASE_URL"))
+    model = (settings.get("ANTHROPIC_MODEL") or
+             os.environ.get("ANTHROPIC_MODEL"))
+    
+    if auth_token:
+        os.environ["ANTHROPIC_AUTH_TOKEN"] = auth_token
+    if api_key:
+        os.environ["ANTHROPIC_API_KEY"] = api_key
+    if base_url:
+        os.environ["ANTHROPIC_BASE_URL"] = base_url
+    if model:
+        os.environ["ANTHROPIC_MODEL"] = model
+    
+    if auth_token or api_key:
+        return "anthropic", auth_token or api_key
     if os.environ.get("OPENAI_API_KEY"):
         return "openai", os.environ["OPENAI_API_KEY"]
-    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY"):
-        # Edge: key exists in env but not detected above
-        return "anthropic", os.environ.get("ANTHROPIC_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
     # Try Ollama (local)
     try:
         import urllib.request
@@ -36,14 +67,16 @@ def _detect_provider() -> tuple[str, str]:
 
 def _get_model_for_provider(provider: str, complexity: str = "medium") -> str:
     """Get the best available model for the provider."""
+    # Respect explicit model env vars first
+    if os.environ.get("ANTHROPIC_MODEL"):
+        return os.environ["ANTHROPIC_MODEL"]
     if provider == "anthropic":
-        # Use actual available models
         return os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
     elif provider == "openai":
         return os.environ.get("OPENAI_MODEL", "gpt-4o")
     elif provider == "ollama":
         return os.environ.get("OLLAMA_MODEL", "llama3")
-    return "claude-sonnet-4-20250514"
+    return os.environ.get("ANTHROPIC_MODEL", "MiniMax-M2.7")
 
 
 class LLMClient:
@@ -95,7 +128,15 @@ class LLMClient:
             model = _get_model_for_provider(self.provider)
         """Anthropic Messages API with tool_use."""
         import anthropic
-        client = anthropic.Anthropic(api_key=self.api_key)
+        # Support CC Switch (ANTHROPIC_AUTH_TOKEN) and standard (ANTHROPIC_API_KEY)
+        api_key = (os.environ.get("ANTHROPIC_AUTH_TOKEN") or
+                   os.environ.get("ANTHROPIC_API_KEY") or
+                   self.api_key)
+        base_url = os.environ.get("ANTHROPIC_BASE_URL")
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        client = anthropic.Anthropic(**client_kwargs)
         
         # Convert messages to Anthropic format
         anthropic_messages = []
@@ -129,11 +170,12 @@ class LLMClient:
         response = client.messages.create(
             model=model,
             max_tokens=4096,
+            thinking={"type": "disabled"},
             messages=anthropic_messages,
-            tools=[{"name": t["name"], "description": t.get("description",""), "input_schema": t["parameters"]} for t in tools]
+            tools=[{"name": t["name"], "description": t.get("description",""), "input_schema": t.get("input_schema", t.get("parameters", {}))} for t in tools]
         )
         
-        # Parse response
+        # Parse response — handle both TextBlock and ThinkingBlock
         result_content = ""
         tool_calls = []
         for block in response.content:
@@ -145,6 +187,7 @@ class LLMClient:
                     "name": block.name,
                     "args": block.input
                 })
+            # Skip ThinkingBlock (already disabled but just in case)
         
         return {"content": result_content, "tool_calls": tool_calls}
 
@@ -794,7 +837,7 @@ Remember: You are a SENIOR ENGINEER. Write code you'd be proud to merge.
             complexity = "simple"
         else:
             complexity = "complex"
-        return _get_model_for_provider(self.provider, complexity)
+        return _get_model_for_provider(self.llm.provider, complexity)
 
 
 # ─── Nexus Main ────────────────────────────────────────────────────────────────
