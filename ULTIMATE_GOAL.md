@@ -6,36 +6,36 @@
 | 能力 | Claude Code | RalphLoop 当前 | Gap |
 |------|------------|----------------|-----|
 | 文件读写编辑 | ✅ 完善 | ✅ agent_loop.py 基础 | ~90% |
-| 项目根检测 + CLAUDE.md | ✅ | ❌ 无 CLAUDE.md loader | 大 |
+| 项目根检测 + CLAUDE.md | ✅ | ✅ claude_md_loader.py 完成 | 已完成 |
 | Bash 工具 | ✅ 完善 | ✅ 基础 | ~85% |
 | Glob/Grep | ✅ 完善 | ✅ 基础 | ~90% |
-| Git 集成 | ✅ | ❌ 基础 | ~60% |
-| 安全扫描 | ✅ 内置 | ❌ | 很大 |
-| 上下文管理 | ✅ 智能 | ⚠️ 基础 | 中等 |
-| TTY 交互（连续监控） | ✅ | ❌ TUI 未完成 | 大 |
+| Git 集成 | ✅ | ⚠️ 基础 | 中等 |
+| 安全扫描 | ✅ 内置 | ✅ security_scan.py 完成 | ~80% |
+| 上下文管理 | ✅ 智能 | ✅ 4-tier 监控框架完成 | ~70% |
+| TTY 交互（连续监控） | ✅ | ✅ Nexus TUI ANSI 仪表盘 | ~80% |
 | 多文件 diff | ✅ | ✅ apply_diff | ~90% |
 | Tool call 流式输出 | ✅ | ❌ 同步 | 中等 |
 
 ### 2. UX/CLI 体验
 | 能力 | Claude Code | RalphLoop 当前 | Gap |
 |------|------------|----------------|-----|
-| 优雅 CLI 输出 | ✅ | ❌ 基础 print | 很大 |
-| 进度指示 | ✅ | ❌ 无 | 很大 |
-| 错误恢复 | ✅ 优雅 | ❌ 基础 | 大 |
-| ANSI 彩色输出 | ✅ | ❌ 无 | 大 |
+| 优雅 CLI 输出 | ✅ | ⚠️ Rich app.py 框架在 | 中等 |
+| 进度指示 | ✅ | ✅ Nexus TUI 仪表盘 | ~80% |
+| 错误恢复 | ✅ 优雅 | ⚠️ 基础 | 中等 |
+| ANSI 彩色输出 | ✅ | ✅ Nexus TUI | ~90% |
 
 ### 3. 架构优势（Claude Code 没有的创新）
-| 创新 | Claude Code | RalphLoop 目标 | 状态 |
-|------|------------|----------------|------|
-| TDD 强制门 | ❌ | ✅ RED→GREEN→REFACTOR | ⚠️ 框架在，enforcement 不完整 |
-| 多 Agent 协作 | ❌ | ✅ Specifier/Implementer/Reviewer/Security | ❌ 未实现 |
-| RalphLoop 状态可见性 | ❌ | ✅ PLAN→ACT→VERIFY→REFLECT | ⚠️ 框架在，UI 缺失 |
-| 4-Tier Context Budget | ❌ | ✅ PEAK/GOOD/DEGRADING/POOR | ⚠️ 框架在，未联动 |
-| 技能自进化 | ❌ | ✅ 错误→技能捕获 | ❌ 未实现 |
-| Subagent 并行化 | ❌ | ✅ delegate_task | ❌ nexus 未集成 |
-| Multi-model 路由 | ⚠️ 有限 | ✅ Anthropic/OpenAI/Ollama | ⚠️ 有框架，无智能路由 |
-| 跨会话 Checkpoint | ❌ | ✅ JSON 持久化 | ❌ 未实现 |
-| Skill 系统 | ❌ | ✅ Hermes Skill | ⚠️ 有框架，nexus 无集成 |
+| 创新 | Claude Code | RalphLoop 状态 |
+|------|------------|----------------|
+| TDD 强制门 | ❌ | ✅ tdd_enforcer.py + agent_loop 联动 |
+| 多 Agent 协作 | ❌ | ✅ subagent_registry + SubagentIntegration |
+| RalphLoop 状态可见性 | ❌ | ✅ Nexus TUI 实时仪表盘 |
+| 4-Tier Context Budget | ❌ | ✅ orchestrator ContextTier 联动 |
+| 技能自进化 | ❌ | ❌ 待实现 |
+| Subagent 并行化 | ❌ | ✅ delegate_task 集成 |
+| Multi-model 路由 | ⚠️ 有限 | ⚠️ 有框架，无智能路由 |
+| 跨会话 Checkpoint | ❌ | ❌ 待实现 |
+| Skill 系统 | ❌ | ⚠️ 有框架，nexus 无集成 |
 
 ---
 
