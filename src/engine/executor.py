@@ -5,8 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-if True:  # noqa: C901
-    pass
+
+class ToolExecutionError(Exception):
+    """Raised when a tool execution fails."""
+
+    def __init__(self, tool_name: str, reason: str):
+        super().__init__(f"Tool '{tool_name}' failed: {reason}")
+        self.tool_name = tool_name
+        self.reason = reason
 
 
 @dataclass
@@ -24,6 +30,110 @@ class LoopResult:
     turns: int = 0
     complete: bool = False
     final_content: str = ""
+
+
+# ------------------------------------------------------------------
+# Message types for LLM communication
+# ------------------------------------------------------------------
+
+
+@dataclass
+class SystemMessage:
+    """System message for LLM.
+
+    Serializes to: {"role": "system", "content": "..."}
+    """
+
+    content: str
+
+    def to_llm_dict(self) -> dict[str, Any]:
+        """Convert to LLM API message format."""
+        return {"role": "system", "content": self.content}
+
+
+@dataclass
+class UserMessage:
+    """User message for LLM.
+
+    Serializes to: {"role": "user", "content": "..."}
+    """
+
+    content: str
+
+    def to_llm_dict(self) -> dict[str, Any]:
+        """Convert to LLM API message format."""
+        return {"role": "user", "content": self.content}
+
+
+@dataclass
+class AssistantMessage:
+    """Assistant message for LLM.
+
+    Serializes to: {"role": "assistant", "content": "...", "tool_calls": [...]}
+    when there are tool calls, or just {"role": "assistant", "content": "..."}
+    when there's text content.
+    """
+
+    content: str = ""
+    tool_calls: list[Any] = field(default_factory=list)
+
+    def to_llm_dict(self) -> dict[str, Any]:
+        """Convert to LLM API message format."""
+        msg = {"role": "assistant", "content": self.content}
+        if self.tool_calls:
+            # Convert ToolCall objects to provider-native format
+            msg["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.input,
+                }
+                for tc in self.tool_calls
+            ]
+        return msg
+
+
+@dataclass
+class ToolResultMessage:
+    """Result message from a tool execution.
+
+    Serializes to: {"role": "user", "content": "...", "name": "tool_name"}
+    The "name" field references which tool was called (for Anthropic).
+    OpenAI uses tool_call_id instead.
+    """
+
+    name: str  # Name of the tool that was executed
+    content: str
+    tool_call_id: str = ""  # ID of the tool call (OpenAI style)
+
+    def to_llm_dict(self) -> dict[str, Any]:
+        """Convert to LLM API message format."""
+        msg = {
+            "role": "user",
+            "content": self.content,
+            "name": self.name,
+        }
+        if self.tool_call_id:
+            msg["tool_call_id"] = self.tool_call_id
+        return msg
+
+
+def messages_to_llm_format(messages: list[Any]) -> list[dict[str, Any]]:
+    """Convert a list of message objects to LLM API format.
+
+    Args:
+        messages: List of message objects (SystemMessage, UserMessage,
+                  AssistantMessage, ToolResultMessage)
+
+    Returns:
+        List of dictionaries suitable for LLM API calls.
+    """
+    return [msg.to_llm_dict() for msg in messages]
+
+
+# ------------------------------------------------------------------
+# RalphExecutor
+# ------------------------------------------------------------------
 
 
 class RalphExecutor:
@@ -76,14 +186,14 @@ class RalphExecutor:
             LoopResult with messages, turn count, completion flag, and
             final content.
         """
-        from dataclasses import replace
-        from typing import Any
-
         # Build initial message list
         if system_prompt is None:
             system_prompt = "You are Ralph, a helpful AI assistant."
 
-        messages: list[Any] = [SystemMessage(system_prompt), UserMessage(task)]
+        messages: list[Any] = [
+            SystemMessage(system_prompt),
+            UserMessage(task),
+        ]
 
         complete = False
         final_content = ""
@@ -102,11 +212,17 @@ class RalphExecutor:
             # Pre-step hook
             self.hooks.pre_step(messages)
 
+            # Convert messages to LLM API format
+            messages_as_dicts = messages_to_llm_format(messages)
+
             # Attempt LLM completion with up to 3 retries
             response = None
             for attempt in range(3):
                 try:
-                    response = self.llm.complete(messages, tools=self.registry.definitions())
+                    response = self.llm.complete(
+                        messages_as_dicts,
+                        tools=self.registry.definitions(),
+                    )
                     last_error = None
                     break
                 except Exception as exc:  # noqa: BLE001
@@ -122,20 +238,41 @@ class RalphExecutor:
             if response is None:
                 break
 
-            # Append assistant response
+            # Append assistant response to message history
             if response.content:
-                messages.append(AssistantMessage(response.content))
+                messages.append(AssistantMessage(content=response.content))
                 final_content = response.content
 
             # Handle tool calls
             if response.tool_calls:
+                # Add assistant message with tool calls
                 messages.append(AssistantMessage(tool_calls=response.tool_calls))
 
+                # Execute each tool and append results
                 for tc in response.tool_calls:
-                    result = self.registry.execute(tc.name, **tc.input)
-                    messages.append(
-                        ToolResultMessage(tool_call_id=tc.id, content=result.output)
-                    )
+                    try:
+                        result = self.registry.execute(tc.name, **tc.input)
+                        if result.is_error:
+                            raise ToolExecutionError(tc.name, result.error or "Unknown error")
+                        messages.append(
+                            ToolResultMessage(
+                                name=tc.name,
+                                content=result.output,
+                                tool_call_id=tc.id,
+                            )
+                        )
+                    except Exception as exc:
+                        if isinstance(exc, ToolExecutionError):
+                            error_msg = str(exc)
+                        else:
+                            error_msg = f"Tool '{tc.name}' raised {type(exc).__name__}: {exc}"
+                        messages.append(
+                            ToolResultMessage(
+                                name=tc.name,
+                                content=f"Error: {error_msg}",
+                                tool_call_id=tc.id,
+                            )
+                        )
 
             # Post-step hook
             self.hooks.post_step(messages)
@@ -172,35 +309,6 @@ class RalphExecutor:
         if response.content and not response.tool_calls:
             return True
         # If the model explicitly says it is done (e.g. stops with stop_reason)
-        if getattr(response, "stop_reason", None) in ("end_turn", "stop_sequence"):
+        if getattr(response, "finish_reason", None) in ("end_turn", "stop_sequence", "stop"):
             return True
         return False
-
-
-# ------------------------------------------------------------------
-# Minimal message types (can be replaced by importing from a schema lib)
-# ------------------------------------------------------------------
-
-from dataclasses import dataclass as _dataclass, field as _field
-
-
-@_dataclass
-class SystemMessage:
-    content: str
-
-
-@_dataclass
-class UserMessage:
-    content: str
-
-
-@_dataclass
-class AssistantMessage:
-    content: str = ""
-    tool_calls: list[Any] = _field(default_factory=list)
-
-
-@_dataclass
-class ToolResultMessage:
-    tool_call_id: str
-    content: str
