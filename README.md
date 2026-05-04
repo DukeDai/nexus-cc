@@ -102,7 +102,7 @@ python nexus.py skills list
 
 ---
 
-## RalphLoop 状态机
+## 📋 待办清单
 
 ```
   ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌──────────┐
@@ -245,33 +245,14 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 - **19/19 CLI 测试通过**
 - **mypy: tools/ 0 errors, CLI 0 errors**
 
-### 🔄 待完成（类型注解收尾）
-
-> 目标：无运行时错误即可，mypy 类型注解可后续逐步完善
-
-- [ ] `src/llm/client.py` — 第三方 SDK(openai/anthropic) 类型不一致 (~35 errors)
-- [ ] `src/ralphloop/agent_loop.py` — 类型不匹配/tuple 索引/重定义 (~10 errors)
-- [ ] `src/ralphloop/tdd_enforcer.py` — 缺少 impl_code/test_code 属性
-- [ ] `src/tui/` — Rich Console kwargs 参数问题 (~35 errors)
-- [ ] `src/mcp/` — MCP 协议类型、外部库 stub 缺失 (~30 errors)
-- [ ] `src/llm/model_router.py` — 重复定义、返回值顺序
-- [ ] `src/agents/` — 安全扫描类属性类型
-
-**当前 mypy 状态：** `Found 173 errors in 43 files`（大部分是第三方库类型和 Rich Console API 严格校验）
-
-
-
----
-
-## 状态：已完成 vs 进行中
-
 ### ✅ 已完成
+
 - RalphLoop 状态机 + orchestrator
 - LLM--driven agent_loop（真正调用 LLM + 工具闭环）
 - TDD Enforcer（RED→GREEN→REFACTOR）
 - CLAUDE.md loader（三层合并）
 - Subagent registry + SubagentIntegration
-- Nexus TUI（ANSI 实时仪表盘）✅
+- Nexus TUI（ANSI 实时仪表盘）
 - verification pipeline（tdd_gate, security_scan, review_gate, test_gate）
 - MCP bridge + presets + connection lifecycle
 - 5 专业 Agent（Specifier, Implementer, Reviewer, Security, Test）
@@ -283,12 +264,32 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 - **tools/ 类型注解清零** — `src/tools/` 0 mypy errors
 - **TUI Rich 组件修复** — Layout/Text/Table API 全部修好
 
-### 🔄 下一轮（act-e2e）
+### 📋 待办
+
+**类型注解收尾**（目标：无运行时错误即可，逐步完善）
+- [ ] `src/llm/client.py` (~35 errors) — 第三方 SDK(openai/anthropic) 类型不一致
+- [ ] `src/ralphloop/agent_loop.py` (~10 errors) — 类型不匹配/tuple 索引/重定义
+- [ ] `src/ralphloop/tdd_enforcer.py` — 缺少 impl_code/test_code 属性
+- [ ] `src/tui/` (~35 errors) — Rich Console kwargs 参数问题
+- [ ] `src/mcp/` (~30 errors) — MCP 协议类型、外部库 stub 缺失
+- [ ] `src/llm/model_router.py` — 重复定义、返回值顺序
+- [ ] `src/agents/` — 安全扫描类属性类型
+- [ ] `src/context/` (~6 errors) — Path/None 属性访问
+- [ ] `src/self_evolution/` (~4 errors) — 缺少返回类型
+
+> mypy 基线：`Found 173 errors in 43 files`（大部分是第三方库类型和 Rich Console API 严格校验）
+
+**TUI 功能完善**
+- [ ] `undo` 命令实现
+
+**下一轮 act-e2e**
 - [ ] 更多端到端测试场景
 - [ ] TDD 强制流程验证
 - [ ] Multi-Agent 并行执行测试
 - [ ] MCP 集成测试
 - [ ] 性能对比分析
+
+---
 
 ### 📊 测试结果 (2026-05-04)
 
