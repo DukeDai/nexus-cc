@@ -247,24 +247,53 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 
 ### ✅ 已完成
 
-- RalphLoop 状态机 + orchestrator
-- LLM--driven agent_loop（真正调用 LLM + 工具闭环）
-- TDD Enforcer（RED→GREEN→REFACTOR）
+- RalphLoop 状态机 + orchestrator（框架在，未集成验证/Multi-Agent）
+- LLM-driven agent_loop（真正调用 LLM + 工具闭环）
+- TDD Enforcer 骨架（RED→GREEN→REFACTOR，orchestrator 未调用）
 - CLAUDE.md loader（三层合并）
-- Subagent registry + SubagentIntegration
-- Nexus TUI（ANSI 实时仪表盘）
-- verification pipeline（tdd_gate, security_scan, review_gate, test_gate）
+- Subagent registry 定义（5 种 Agent，orchestrator 未调用）
+- Nexus TUI（Rich 实时仪表盘，可运行）
+- verification pipeline（写好了，orchestrator 没集成）
 - MCP bridge + presets + connection lifecycle
-- 5 专业 Agent（Specifier, Implementer, Reviewer, Security, Test）
-- **自进化技能系统**（错误→模式捕获→技能库）`src/self_evolution/engine.py` (490行)
-- **智能 Model 路由**（小任务用小模型）`src/llm/model_router.py` (456行)
-- **跨会话 Checkpoint 持久化**（SQLite）`src/context/checkpoint.py` (303行)
-- **Tool call 流式输出**`src/llm/client.py` (320行)
+- 5 专业 Agent 定义（specifier/implementer/reviewer/security/test，orchestrator 未调用）
+- **自进化技能骨架**（`SelfEvolutionEngine`，核心逻辑空壳）
+- **智能 Model 路由骨架**（`model_router.py`，未根据复杂度选模型）
+- **Checkpoint 持久化**（WAL 在，`checkpoint.py`，未集成恢复逻辑）
+- **Tool call 流式输出**（LLM client 支持，agent_loop 未启用）
 - **CLI 重构**（Click 模块化）`src/cli/` — 19 个测试全通过
 - **tools/ 类型注解清零** — `src/tools/` 0 mypy errors
 - **TUI Rich 组件修复** — Layout/Text/Table API 全部修好
 
 ### 📋 待办
+
+#### 🚨 现实差距（骨架有肉无）
+
+> README 吹的很多功能实际是 stub 或未集成
+
+**核心未集成**
+- [ ] `src/verification/` pipeline — 写了 tdd_gate/security_scan/review_gate/test_gate，但 **RalphLoop orchestrator 完全没用它们**，每次 ACT 直接结束
+- [ ] Multi-Agent 并行 — `SubagentIntegration` 有 ThreadPoolExecutor 但 line 314 写的是 `# TODO: Replace with actual delegate_task call`
+- [ ] Subagent 协作 — `subagent_registry.py` 定义了 5 种 Agent，但 orchestrator 没调用它们协同工作
+
+**功能 stub**
+- [ ] Model Router — `model_router.py` (456行) 框架在，但没有根据任务复杂度选模型的逻辑
+- [ ] Checkpoint 恢复 — `checkpoint.py` (303行) 写了 WAL，但 orchestrator 没在失败后从检查点恢复
+- [ ] Self-Evolution — `SelfEvolutionEngine` 骨架在，但 error_learner/capability_capture 这些核心方法基本是空壳
+
+**TUI 交互**
+- [ ] `undo` 命令 — README 写了待实现，确实没实现
+- [ ] Approval/Reject — 写了 approval.py 但 orchestrator 没实际暂停等待用户输入
+
+**工具链**
+- [ ] 工具定义重复 — `TOOL_DEFINITIONS` 在 agent_loop.py 定义了一套，src/tools/ 下又有一套，CLI 用的是另一套，没统一
+- [ ] bash subprocess 裸调用 — `agent_loop.py:102-111` 用 shell=True + 字符串拼接，有安全风险
+
+**代码质量**
+- [ ] 173 mypy errors — 主要是第三方库类型，但也有真正漏掉的类型
+- [ ] agent_loop.py 500+ 行 — 巨型函数没拆分，测试难写
+- [ ] 异常处理粗糙 — 大量 `except: pass`，错误吞掉不报
+
+---
 
 **类型注解收尾**（目标：无运行时错误即可，逐步完善）
 - [ ] `src/llm/client.py` (~35 errors) — 第三方 SDK(openai/anthropic) 类型不一致
