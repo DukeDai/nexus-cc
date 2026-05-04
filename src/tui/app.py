@@ -390,12 +390,20 @@ class NexusTUI:
             Layout(name="footer", size=5),
         )
 
-        # Main area: 2x2 grid
-        layout["main"].split_row(
+        # Main area: 2x2 grid - split into left and right columns
+        layout["main"].split_column(
+            Layout(name="left_col"),
+            Layout(name="right_col"),
+        )
+        
+        # Left column: state + context
+        layout["left_col"].split_column(
             Layout(name="state", ratio=1),
             Layout(name="context", ratio=1),
         )
-        layout["main"].split_row(
+        
+        # Right column: agents + tasks
+        layout["right_col"].split_column(
             Layout(name="agents", ratio=1),
             Layout(name="tasks", ratio=1),
         )

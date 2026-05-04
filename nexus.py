@@ -21,6 +21,11 @@ _NEXUS_SRC = Path(__file__).parent / "src"
 if str(_NEXUS_SRC) not in sys.path:
     sys.path.insert(0, str(_NEXUS_SRC))
 
+# Add tui module path for TUI imports
+_tui_src = _NEXUS_SRC / "tui"
+if str(_tui_src) not in sys.path:
+    sys.path.insert(0, str(_tui_src))
+
 # ── Core RalphLoop Engine ────────────────────────────────────────────────────
 from ralphloop import (
     RalphLoop,
@@ -377,8 +382,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_tui(args: argparse.Namespace) -> int:
     """Launch interactive TUI."""
     try:
-        from tui.app import NexusTUIApp
-        app = NexusTUIApp(workdir=args.workdir or os.getcwd())
+        from tui.app import NexusTUI
+        from pathlib import Path
+        # TUI 需要 task_queue 和 context_monitor 参数
+        app = NexusTUI(
+            task_queue=[],
+            context_monitor=lambda: 0.0,
+            checkpoint_dir=Path(args.workdir) if args.workdir else Path.cwd(),
+        )
         app.run()
     except ImportError as e:
         print(f"TUI not available: {e}")

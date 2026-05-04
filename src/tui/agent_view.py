@@ -273,9 +273,12 @@ class AgentView:
         for role in [AgentRole.SPECIFIER, AgentRole.IMPLEMENTER, AgentRole.REVIEWER, AgentRole.SECURITY]:
             agent = self._state.agents.get(role)
             if agent:
-                content_lines.append(self._build_agent_row(agent))
+                # Convert Table to string representation
+                agent_table = self._build_agent_row(agent)
+                content_lines.append(Text(str(agent_table)))
                 content_lines.append(Text(""))
 
+        # Join all content with newlines
         return Panel(
             Text("\n").join(content_lines),
             title="[bold]Multi-Agent Status[/bold]",

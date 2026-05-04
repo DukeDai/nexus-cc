@@ -268,9 +268,10 @@ class StateView:
         content_lines.append(self.get_transition_history_text())
         content_lines.append(Text(""))
 
-        # Metrics
-        content_lines.append(Text.from_markup("[bold]Metrics:[/bold]"))
-        content_lines.append(self._build_metrics_table())
+        # Metrics - convert table to string representation
+        metrics_text = Text.from_markup("[bold]Metrics:[/bold]")
+        content_lines.append(metrics_text)
+        content_lines.append(Text(str(self._build_metrics_table())))
 
         # Running indicator
         if self._state.is_running:
@@ -284,7 +285,7 @@ class StateView:
             Text("\n").join(content_lines),
             title="[bold]RalphLoop State Machine[/bold]",
             border_style="cyan",
-            box=box.ROUNDED,
+            box=rich_box.ROUNDED,
         )
 
 

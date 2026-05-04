@@ -255,8 +255,18 @@ class ContextView:
                 "[bold red]⚠ EMERGENCY: Context budget critical![/bold red]"
             ))
 
+        # Convert all content to Text objects
+        text_content = []
+        for item in content_lines:
+            if isinstance(item, str):
+                text_content.append(Text.from_markup(item))
+            elif hasattr(item, "__rich__"):  # Rich renderables like Table
+                text_content.append(Text(str(item)))
+            else:
+                text_content.append(item)
+        
         return Panel(
-            Text("\n").join(content_lines),
+            Text("\n").join(text_content),
             title="[bold]Context Budget[/bold]",
             border_style=TIER_COLORS[self._state.tier],
         )

@@ -33,26 +33,25 @@ pip install -e .
 ---
 
 ## 快速开始
+> TUI 模式已修复 ✅
 
 ```bash
-# RalphLoop 核心任务执行
-nexus run --task "Create a REST API with FastAPI"
+# RalphLoop 核心任务执行 (推荐)
+python nexus.py run --task "Create a REST API with FastAPI"
 
-# 交互式 TUI（实时状态仪表盘）
-nexus tui
+# 交互式 TUI（实时监控）
+python nexus.py tui
 
 # 会话管理
-nexus session list
-nexus session resume <session-id>
+python nexus.py session list
+python nexus.py session resume <session-id>
 
 # MCP 服务器
-nexus mcp list
-nexus mcp add github "npx github-mcp-server"
-nexus mcp presets
+python nexus.py mcp list
+python nexus.py mcp presets
 
-# Hook 管理
-nexus hooks list
-nexus hooks add pre-commit ./scripts/security-check.sh
+# Skills 管理
+python nexus.py skills list
 ```
 
 ---

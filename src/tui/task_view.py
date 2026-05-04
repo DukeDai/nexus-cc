@@ -314,16 +314,18 @@ class TaskView:
         Returns:
             Panel ready for layout integration.
         """
-        content_lines = [
-            self._build_progress_summary(),
-            Text(""),
-            self._build_queue_summary(),
-            Text(""),
-            self._build_task_table(),
-        ]
-
+        # Build content as plain strings (convert Rich renderables immediately)
+        lines = []
+        lines.append(str(self._build_progress_summary()))
+        lines.append("")
+        lines.append(str(self._build_queue_summary()))
+        lines.append("")
+        # Convert Table to string immediately
+        task_table = self._build_task_table()
+        lines.append(str(task_table))
+        
         return Panel(
-            Text("\n").join(content_lines),
+            Text("\n").join([Text.from_markup(line) for line in lines]),
             title="[bold]Task Queue[/bold]",
             border_style="cyan",
         )
