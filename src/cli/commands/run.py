@@ -206,6 +206,51 @@ class RalphLoopExecutor:
         result = _run_loop(act_prompt, "ACT")
         self.turns += result.turns
 
+        # ── ACT 后验证 ─────────────────────────────────────────────
+        changed_files = self.context.get_changed_files()
+        if changed_files:
+            click.echo(f"\n[VERIFY] Running security scan on {len(changed_files)} changed files...")
+            from src.verification.security_scan import SecurityScan
+            
+            scanner = SecurityScan()
+            codes = {}
+            for f in changed_files:
+                if f.endswith((".py", ".js", ".ts", ".jsx", ".tsx")):
+                    content = self.context.get_file_content(f)
+                    if content:
+                        codes[f] = content
+            
+            if codes:
+                # Run security scan on each file
+                blocked = False
+                blocking_issues = []
+                for f, code in codes.items():
+                    scan_result = scanner.scan(code, file_path=f)
+                    if not scan_result.passed:  # If any issue found, block
+                        blocked = True
+                        for finding in scan_result.findings:
+                            blocking_issues.append(f"[SECURITY] {f}:{finding.line_number} - {finding.title}")
+                
+                if blocked:
+                    click.echo(f"\n[!!] Security scan FAILED:")
+                    for issue in blocking_issues:
+                        click.echo(f"  - {issue}")
+                    if self.retries < self.MAX_RETRIES:
+                        self.retries += 1
+                        click.echo(f"[!] Retry {self.retries}/{self.MAX_RETRIES}")
+                        return self.execute_task(task)
+                    else:
+                        return {
+                            "success": False,
+                            "turns": self.turns,
+                            "final_state": "VERIFICATION_FAILED",
+                            "content": self._format_tool_results(),
+                            "tool_count": len(self.context.tool_results),
+                            "error": f"Security blocked: {blocking_issues}",
+                        }
+                else:
+                    click.echo("[OK] Security scan passed")
+
         # ── VERIFY state ───────────────────────────────────────
         self.state = RalphState.VERIFY
         click.echo(f"\n[VERIFY] Checking results...")

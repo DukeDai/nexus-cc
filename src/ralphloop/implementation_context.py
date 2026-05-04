@@ -180,6 +180,41 @@ class ImplementationContext:
                 f"[{datetime.now().isoformat()}] {error}"
             )
 
+    def get_changed_files(self) -> list[str]:
+        """Get list of files modified in this session (git diff --name-only).
+        
+        Returns:
+            List of file paths that were modified.
+        """
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--name-only", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
+        except Exception:
+            pass
+        return []
+
+    def get_file_content(self, file_path: str) -> str | None:
+        """Get content of a file.
+        
+        Args:
+            file_path: Path to the file.
+            
+        Returns:
+            File content as string, or None if not found/not readable.
+        """
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return None
+
     def checkpoint(self) -> Checkpoint:
         """Create a checkpoint of the current context state.
 
