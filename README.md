@@ -205,7 +205,7 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 
 ### ✅ 已完成
 - RalphLoop 状态机 + orchestrator
-- LLM-driven agent_loop（真正调用 LLM + 工具闭环）
+- LLM--driven agent_loop（真正调用 LLM + 工具闭环）
 - TDD Enforcer（RED→GREEN→REFACTOR）
 - CLAUDE.md loader（三层合并）
 - Subagent registry + SubagentIntegration
@@ -213,16 +213,34 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 - verification pipeline（tdd_gate, security_scan, review_gate, test_gate）
 - MCP bridge + presets + connection lifecycle
 - 5 专业 Agent（Specifier, Implementer, Reviewer, Security, Test）
+- **自进化技能系统**（错误→模式捕获→技能库）`src/self_evolution/engine.py` (490行)
+- **智能 Model 路由**（小任务用小模型）`src/llm/model_router.py` (456行)
+- **跨会话 Checkpoint 持久化**（SQLite）`src/context/checkpoint.py` (303行)
+- **Tool call 流式输出**`src/llm/client.py` (320行)
 
 ### 🔄 下一轮（act-e2e）
-- 端到端真实任务完成（用 Nexus 开发一个 REST API）
-- 与 Claude Code 相同任务对比测试
+- [ ] 更多端到端测试场景
+- [ ] TDD 强制流程验证
+- [ ] Multi-Agent 并行执行测试
+- [ ] MCP 集成测试
+- [ ] 性能对比分析
 
-### 📋 规划中
-- 自进化技能系统（错误→技能捕获）
-- 智能 Model 路由（小任务用小模型）
-- 跨会话 Checkpoint 持久化
-- Tool call 流式输出
+### 📊 测试结果 (2026-05-04)
+
+**任务**：创建 Flask REST API（GET/POST/DELETE /todos）
+
+| 工具 | 结果 | 代码行数 | 状态 |
+|------|------|----------|------|
+| **Nexus** | ✅ 成功 | 57行 | 通过 |
+| **Claude Code** | ✅ 成功 | 49行 | 通过 |
+
+**验证结果**：
+- GET /todos → `[]` ✅
+- POST /todos (title="Test task") → `{"id":1,"title":"Test task","completed":false}` ✅
+- DELETE /todos/1 → `{"message":"Todo 1 deleted"}` ✅
+- GET /todos → `[]` ✅
+
+**结论**：Nexus 和 Claude Code 都能成功完成相同的 REST API 开发任务。Nexus 采用了更结构化的 RalphLoop 状态机流程，Claude Code 采用直接对话式。
 
 ---
 

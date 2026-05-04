@@ -89,9 +89,21 @@ python nexus.py session resume <id>
 
 ## 当前状态
 
-| 任务 | 状态 |
-|------|------|
-| RalphLoopExecutor 核心 | ✅ 完成 |
-| 6 层架构实现 | ✅ 完成 |
-| E2E 测试 | ⏳ 等API |
-| Claude Code 对比 | ⏳ 待做 |
+| 任务 | 状态 | 日期 |
+|------|------|------|
+| RalphLoopExecutor 核心 | ✅ 完成 | 2026-05-01 |
+| 6 层架构实现 | ✅ 完成 | 2026-05-02 |
+| E2E 测试 (REST API) | ✅ 完成 | 2026-05-04 |
+| Claude Code 对比 | ✅ 完成 | 2026-05-04 |
+
+### 测试详情
+
+**测试任务**：创建 Flask REST API with TODO endpoints
+- GET /todos
+- POST /todos  
+- DELETE /todos/<id>
+
+**Nexus 输出**：`app.py` (57行) + `requirements.txt`
+**Claude Code 输出**：`app.py` (49行) + `requirements.txt`
+
+两者均通过功能验证。
