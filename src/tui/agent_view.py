@@ -7,8 +7,9 @@ Each agent shows state, model tier, and activity.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Callable
 from enum import Enum, auto
+from io import StringIO
+from typing import Optional, Callable
 
 from rich.console import Console
 from rich.panel import Panel
@@ -17,6 +18,14 @@ from rich.table import Table
 from rich.text import Text
 
 from src.agents.base import AgentRole, ModelTier
+
+
+def _render_rich(renderable) -> str:
+    """Render a Rich object to string using a StringIO buffer."""
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+    console.print(renderable, end="")
+    return buf.getvalue().rstrip("\n")
 
 
 # ─── Agent Status Colors ───────────────────────────────────────────────────────
@@ -273,9 +282,9 @@ class AgentView:
         for role in [AgentRole.SPECIFIER, AgentRole.IMPLEMENTER, AgentRole.REVIEWER, AgentRole.SECURITY]:
             agent = self._state.agents.get(role)
             if agent:
-                # Convert Table to string representation
                 agent_table = self._build_agent_row(agent)
-                content_lines.append(Text(str(agent_table)))
+                rendered = _render_rich(agent_table)
+                content_lines.append(Text.from_markup(rendered))
                 content_lines.append(Text(""))
 
         # Join all content with newlines

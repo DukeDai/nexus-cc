@@ -21,7 +21,11 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
-dependencies = []
+dependencies = [
+    "click>=8.1.0",
+    "readchar>=4.0",
+    "rich>=13.0.0",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -32,11 +36,19 @@ dev = [
 ]
 
 [project.scripts]
-nexus = "nexus:main"
+# NOTE: `nexus` command requires: pip install -e .
+# During development, use: python nexus.py
+nexus = "src.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",  # suppress enum warning from states.py
+]
 
 [tool.ruff]
 line-length = 100

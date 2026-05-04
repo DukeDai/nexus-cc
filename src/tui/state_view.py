@@ -7,6 +7,7 @@ for current state, transitions, retry count, and metrics.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from io import StringIO
 from typing import Optional, Callable
 
 from rich.console import Console
@@ -21,6 +22,14 @@ from rich import box as rich_box
 
 from src.ralphloop.states import RalphState
 from src.ralphloop.orchestrator import ContextTier
+
+
+def _render_rich(renderable) -> str:
+    """Render a Rich object to string using a StringIO buffer."""
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+    console.print(renderable, end="")
+    return buf.getvalue().rstrip("\n")
 
 
 # ─── Color Palette ────────────────────────────────────────────────────────────
@@ -271,7 +280,8 @@ class StateView:
         # Metrics - convert table to string representation
         metrics_text = Text.from_markup("[bold]Metrics:[/bold]")
         content_lines.append(metrics_text)
-        content_lines.append(Text(str(self._build_metrics_table())))
+        rendered_table = _render_rich(self._build_metrics_table())
+        content_lines.append(Text.from_markup(rendered_table))
 
         # Running indicator
         if self._state.is_running:

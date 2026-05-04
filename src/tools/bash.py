@@ -59,25 +59,25 @@ class BashTool(BaseTool):
             return ToolResult(success=False, error="Timeout must be positive")
 
         try:
-            # Prepare subprocess
-            kwargs = {
-                "shell": True,
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.PIPE,
-                "timeout": timeout,
-            }
-
-            if cwd:
-                if not os.path.isdir(cwd):
-                    return ToolResult(success=False, error=f"Working directory does not exist: {cwd}")
-                kwargs["cwd"] = cwd
+            # Validate cwd
+            if cwd and not os.path.isdir(cwd):
+                return ToolResult(success=False, error=f"Working directory does not exist: {cwd}")
 
             # Execute command
-            result = subprocess.run(command, **kwargs)
+            result = subprocess.run(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+                cwd=cwd,
+                text=True,
+                errors="replace",
+            )
 
-            # Decode output
-            stdout = result.stdout.decode("utf-8", errors="replace")
-            stderr = result.stderr.decode("utf-8", errors="replace")
+            # Output already decoded via text=True
+            stdout = result.stdout
+            stderr = result.stderr
 
             # Truncate output if needed
             if len(stdout) > self.MAX_OUTPUT_SIZE:

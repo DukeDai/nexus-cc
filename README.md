@@ -32,14 +32,39 @@ pip install -e .
 
 ---
 
+## 配置
+
+### 环境变量
+
+```bash
+# 必须设置
+export ANTHROPIC_API_KEY="sk-ant-..."    # Anthropic API Key（主要认证方式）
+
+# 可选配置
+export ANTHROPIC_AUTH_TOKEN=""            # 备用认证 Token（某些部署方式需要）
+export ANTHROPIC_BASE_URL=""               # API 代理/网关地址（用于代理/内网/兼容接口）
+export ANTHROPIC_MODEL=""                  # 指定模型，默认 claude-sonnet-4-20250514
+export NEXUS_PROVIDER="anthropic"          # LLM 提供商（anthropic/openai/ollama），默认 anthropic
+```
+
+### 依赖
+
+```bash
+pip install readchar>=4.0    # TUI 命令输入支持
+```
+
+---
+
 ## 快速开始
-> TUI 模式已修复 ✅
 
 ```bash
 # RalphLoop 核心任务执行 (推荐)
 python nexus.py run --task "Create a REST API with FastAPI"
 
-# 交互式 TUI（实时监控）
+# 交互式 TUI（实时监控 + 交互命令）
+python nexus.py tui -t "Create a REST API with FastAPI" -C /path/to/project
+
+# TUI 不带任务（空队列，仅监控）
 python nexus.py tui
 
 # 会话管理
@@ -53,6 +78,27 @@ python nexus.py mcp presets
 # Skills 管理
 python nexus.py skills list
 ```
+
+---
+
+## TUI 交互命令
+
+启动 TUI 后，底部命令行可实时输入：
+
+| 命令 | 说明 |
+|------|------|
+| `status` | 显示当前状态 |
+| `help` | 显示帮助 |
+| `approve` | 批准当前操作 |
+| `reject` | 拒绝当前操作 |
+| `retry` | 重试当前任务 |
+| `skip` | 跳过当前任务 |
+| `undo` | 撤销（待实现） |
+| `quit` / `exit` | 退出 TUI |
+
+**交互式 Approval**：当 TUI 暂停在 DEGRADING 状态或危险命令检测时，输入 `approve`/`reject` 控制是否继续。
+
+**Escalation 响应**：当任务重试超限时，底部显示 `1=force-merge 2=rewrite 3=abandon 4=decompose`，直接按数字选择。
 
 ---
 
@@ -194,9 +240,26 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 ## 文件统计
 
 - **60+ Python 文件**
-- **~21,350 行代码**
+- **~21,350 行代码**（本次重构后结构更清晰）
 - **9 个模块包**
-- **7/7 集成测试通过**
+- **19/19 CLI 测试通过**
+- **mypy: tools/ 0 errors, CLI 0 errors**
+
+### 🔄 待完成（类型注解收尾）
+
+> 目标：无运行时错误即可，mypy 类型注解可后续逐步完善
+
+- [ ] `src/llm/client.py` — 第三方 SDK(openai/anthropic) 类型不一致 (~35 errors)
+- [ ] `src/ralphloop/agent_loop.py` — 类型不匹配/tuple 索引/重定义 (~10 errors)
+- [ ] `src/ralphloop/tdd_enforcer.py` — 缺少 impl_code/test_code 属性
+- [ ] `src/tui/` — Rich Console kwargs 参数问题 (~35 errors)
+- [ ] `src/mcp/` — MCP 协议类型、外部库 stub 缺失 (~30 errors)
+- [ ] `src/llm/model_router.py` — 重复定义、返回值顺序
+- [ ] `src/agents/` — 安全扫描类属性类型
+
+**当前 mypy 状态：** `Found 173 errors in 43 files`（大部分是第三方库类型和 Rich Console API 严格校验）
+
+
 
 ---
 
@@ -208,7 +271,7 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 - TDD Enforcer（RED→GREEN→REFACTOR）
 - CLAUDE.md loader（三层合并）
 - Subagent registry + SubagentIntegration
-- Nexus TUI（ANSI 实时仪表盘）
+- Nexus TUI（ANSI 实时仪表盘）✅
 - verification pipeline（tdd_gate, security_scan, review_gate, test_gate）
 - MCP bridge + presets + connection lifecycle
 - 5 专业 Agent（Specifier, Implementer, Reviewer, Security, Test）
@@ -216,6 +279,9 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 - **智能 Model 路由**（小任务用小模型）`src/llm/model_router.py` (456行)
 - **跨会话 Checkpoint 持久化**（SQLite）`src/context/checkpoint.py` (303行)
 - **Tool call 流式输出**`src/llm/client.py` (320行)
+- **CLI 重构**（Click 模块化）`src/cli/` — 19 个测试全通过
+- **tools/ 类型注解清零** — `src/tools/` 0 mypy errors
+- **TUI Rich 组件修复** — Layout/Text/Table API 全部修好
 
 ### 🔄 下一轮（act-e2e）
 - [ ] 更多端到端测试场景

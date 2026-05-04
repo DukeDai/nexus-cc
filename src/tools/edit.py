@@ -16,78 +16,10 @@ from __future__ import annotations
 import os
 import re
 import difflib
-from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Optional, Any
 
-
-class ToolStatus(Enum):
-    """Status codes for tool execution results."""
-    SUCCESS = "success"
-    ERROR = "error"
-    WARNING = "warning"
-    CONFLICT = "conflict"
-
-
-@dataclass
-class ToolResult:
-    """Structured result from tool execution.
-    
-    Attributes:
-        success: Whether the operation succeeded.
-        status: Detailed status enum value.
-        message: Human-readable result message.
-        changes: Summary of changes made (for edit operations).
-        diff: The actual diff if applicable.
-        conflicts: List of detected conflicts.
-        metadata: Additional context-specific data.
-        created_at: Timestamp of result creation.
-    """
-    success: bool
-    status: ToolStatus = ToolStatus.SUCCESS
-    message: str = ""
-    changes: list[dict[str, Any]] = field(default_factory=list)
-    diff: str = ""
-    conflicts: list[dict[str, Any]] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.now)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary."""
-        return {
-            "success": self.success,
-            "status": self.status.value,
-            "message": self.message,
-            "changes": self.changes,
-            "diff": self.diff,
-            "conflicts": self.conflicts,
-            "metadata": self.metadata,
-            "created_at": self.created_at.isoformat(),
-        }
-
-
-class BaseTool:
-    """Abstract base class for all Nexus tools.
-    
-    All tools inherit from BaseTool and implement the execute method.
-    Tools should validate inputs and return structured ToolResult objects.
-    """
-    
-    name: str = "base_tool"
-    description: str = "Base tool class"
-    
-    def execute(self, **kwargs) -> ToolResult:
-        """Execute the tool with given arguments.
-        
-        Args:
-            **kwargs: Tool-specific arguments.
-            
-        Returns:
-            ToolResult with success status and output details.
-        """
-        raise NotImplementedError("Subclasses must implement execute()")
+from .base import BaseTool, ToolResult, ToolStatus
 
 
 class EditTool(BaseTool):
@@ -359,7 +291,7 @@ class EditTool(BaseTool):
                         success=False,
                         status=ToolStatus.CONFLICT,
                         message="Overlapping line ranges detected",
-                        conflicts=[overlap_info]
+                        conflicts=[overlap_info] if overlap_info else []
                     )
             
             # Apply changes in order
@@ -837,7 +769,7 @@ class EditTool(BaseTool):
                 message=f"Error deleting lines: {str(e)}"
             )
     
-    def execute(self, **kwargs) -> ToolResult:
+    def execute(self, **kwargs: Any) -> ToolResult:
         """Execute the edit tool with given operation.
         
         Routes to the appropriate method based on 'operation' parameter.
@@ -890,7 +822,7 @@ class EditTool(BaseTool):
 
 
 # Convenience function for direct usage
-def edit_file(file_path: str, operation: str, **kwargs) -> ToolResult:
+def edit_file(file_path: str, operation: str, **kwargs: Any) -> ToolResult:
     """Convenience function for file editing operations.
     
     Args:

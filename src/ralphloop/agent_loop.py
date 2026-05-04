@@ -10,6 +10,7 @@ The orchestrator manages transitions; this loop does the actual work.
 
 from __future__ import annotations
 
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,7 +73,6 @@ class ToolExecutor:
 
     def execute(self, tool_name: str, tool_args: dict) -> str:
         """Execute a tool and return its result as a string."""
-        import subprocess
         import re
 
         try:
@@ -305,7 +305,6 @@ class ToolExecutor:
 
     def _tdd_test(self, test_path: str, impl_path: str, test_code: str, impl_code: str) -> str:
         """Write test + impl, run pytest."""
-        import subprocess
         results = []
         # Write test
         tp = (self.workdir / test_path).resolve()
@@ -339,7 +338,6 @@ class ToolExecutor:
         return "\n".join(results)
 
     def _git_commit(self, message: str, push: bool) -> str:
-        import subprocess
         result = subprocess.run(
             ["git", "add", "-A"],
             capture_output=True, text=True, cwd=str(self.workdir)

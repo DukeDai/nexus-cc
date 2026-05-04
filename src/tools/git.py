@@ -19,7 +19,7 @@ class GitTool(BaseTool):
     name: str = "git"
     description: str = "Execute Git commands"
     
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.project_root = os.path.expanduser("~/dev/nexus")
     

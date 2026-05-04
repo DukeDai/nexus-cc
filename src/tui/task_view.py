@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from io import StringIO
 from typing import Optional, Callable, Any
 
 from rich.console import Console
@@ -15,6 +16,14 @@ from rich.panel import Panel
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
+
+
+def _render_rich(renderable) -> str:
+    """Render a Rich object to string using a StringIO buffer."""
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=True, width=120)
+    console.print(renderable, end="")
+    return buf.getvalue().rstrip("\n")
 
 
 # ─── Task Status ───────────────────────────────────────────────────────────────
@@ -314,16 +323,15 @@ class TaskView:
         Returns:
             Panel ready for layout integration.
         """
-        # Build content as plain strings (convert Rich renderables immediately)
         lines = []
         lines.append(str(self._build_progress_summary()))
         lines.append("")
         lines.append(str(self._build_queue_summary()))
         lines.append("")
-        # Convert Table to string immediately
+        # Render Table to string properly
         task_table = self._build_task_table()
-        lines.append(str(task_table))
-        
+        lines.append(_render_rich(task_table))
+
         return Panel(
             Text("\n").join([Text.from_markup(line) for line in lines]),
             title="[bold]Task Queue[/bold]",

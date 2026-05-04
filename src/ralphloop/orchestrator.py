@@ -165,6 +165,8 @@ class RalphLoop:
         on_state_change: Optional callback(old_state, new_state).
         on_escalation: Optional callback(escalation_context) -> EscalationOption.
         on_warning: Optional callback(tier, message).
+        on_approval_request: Optional callback(type, description, details) -> bool.
+                           Types: "commit", "context_threshold", "dangerous_command".
     """
 
     MAX_RETRIES: int = 3
@@ -179,6 +181,7 @@ class RalphLoop:
         on_escalation: Optional[Callable[[dict[str, Any]], EscalationOption]] = None,
         on_warning: Optional[Callable[[ContextTier, str], None]] = None,
         agent_executor: Optional[Callable[..., dict[str, Any]]] = None,
+        on_approval_request: Optional[Callable[[str, str, dict], bool]] = None,
     ):
         """Initialize RalphLoop orchestrator.
 
@@ -190,6 +193,8 @@ class RalphLoop:
             on_escalation: Callback returning user's escalation choice.
             on_warning: Callback(tier, message) for tier warnings.
             agent_executor: Callable(task, phase) -> result dict.
+            on_approval_request: Callback(approval_type, description, details) -> bool.
+                               Called before COMMIT to request user approval.
         """
         self.task_queue = task_queue
         self.context_monitor = context_monitor
@@ -198,6 +203,7 @@ class RalphLoop:
         self.on_escalation = on_escalation
         self.on_warning = on_warning
         self.agent_executor = agent_executor or self._default_agent_executor
+        self.on_approval_request = on_approval_request
 
         self.state: RalphState = RalphState.PLAN
         self.task_index: int = 0
@@ -206,6 +212,9 @@ class RalphLoop:
         self.metrics = RalphLoopMetrics()
         self._running: bool = False
         self._checkpoint_count: int = 0
+        self._last_context_tier: ContextTier = ContextTier.PEAK
+        self._context_threshold_approved: bool = False  # True once user approves DEGRADING
+        self._pending_dangerous_commands: list[str] = []
 
         # Validate checkpoint dir exists
         if self.checkpoint_dir:
@@ -325,14 +334,31 @@ class RalphLoop:
         self.metrics.total_retries += 1
 
     def _check_context_tier_warnings(self) -> None:
-        """Emit warnings if context tier changes to DEGRADING."""
+        """Emit warnings and request approval if context tier changes to DEGRADING."""
         tier = self.context_tier
+
+        # Request approval when entering DEGRADING tier (50-70%)
+        if tier == ContextTier.DEGRADING and self._last_context_tier != ContextTier.DEGRADING:
+            if self.on_approval_request and not self._context_threshold_approved:
+                # Block and wait for user decision
+                approved = self.on_approval_request(
+                    "context_threshold",
+                    f"Context budget {self.context_usage:.1f}% — entering DEGRADING mode. Continue?",
+                    {"tier": tier.name, "usage": self.context_usage}
+                )
+                self._context_threshold_approved = approved
+                if not approved:
+                    # User rejected - initiate graceful stop
+                    self._running = False
+
         if tier.should_warn() and self.on_warning:
             self.on_warning(
                 tier,
                 f"Context budget {self.context_usage:.1f}% — "
                 "entering DEGRADING mode. Frontmatter-only reads, minimal inlining."
             )
+
+        self._last_context_tier = tier
 
     def _execute_state(self) -> TransitionTrigger:
         """Execute current state and return trigger for next transition.
@@ -361,6 +387,19 @@ class RalphLoop:
 
         elif self.state == RalphState.VERIFY:
             result = self.agent_executor(task, RalphState.VERIFY)
+
+            # Check for dangerous commands
+            dangerous = result.get("dangerous_commands", [])
+            if dangerous and self.on_approval_request:
+                approved = self.on_approval_request(
+                    "dangerous_command",
+                    f"Dangerous commands detected: {', '.join(dangerous)}",
+                    {"commands": dangerous}
+                )
+                if not approved:
+                    self._running = False
+                    return TransitionTrigger.VERIFICATION_FAILED
+
             if result.get("success"):
                 return TransitionTrigger.VERIFICATION_PASSED
             else:
@@ -444,6 +483,23 @@ class RalphLoop:
 
                 # Check terminal states
                 if self.state == RalphState.COMMIT:
+                    # Request approval before final commit
+                    if self.on_approval_request:
+                        approved = self.on_approval_request(
+                            "commit",
+                            "Approve commit of all changes?",
+                            {"task_count": len(self.task_queue)}
+                        )
+                        if not approved:
+                            # Reject - stop without committing
+                            self._running = False
+                            return {
+                                "success": False,
+                                "final_state": self.state,
+                                "metrics": self.metrics,
+                                "checkpoint_path": str(self._checkpoint()) if self._checkpoint_count > 0 else None,
+                                "error_log": self.error_log + ["Commit rejected by user"],
+                            }
                     self._running = False
                 elif self.state == RalphState.ABORT:
                     self._checkpoint()  # Final checkpoint before abort
@@ -477,3 +533,6 @@ class RalphLoop:
         self.metrics = RalphLoopMetrics()
         self._running = False
         self._checkpoint_count = 0
+        self._last_context_tier = ContextTier.PEAK
+        self._context_threshold_approved = False
+        self._pending_dangerous_commands = []
