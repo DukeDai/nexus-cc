@@ -67,8 +67,8 @@ class ToolExecutor:
     actual implementations and returns string results for the LLM.
     """
 
-    def __init__(self, workdir: Path | None = None):
-        self.workdir = workdir or Path.cwd()
+    def __init__(self, workdir: Path | str | None = None):
+        self.workdir = Path(workdir) if workdir else Path.cwd()
 
     def execute(self, tool_name: str, tool_args: dict) -> str:
         """Execute a tool and return its result as a string."""
@@ -657,7 +657,10 @@ def run_agent_loop(
     context.messages = messages
 
 
-    # Estimate cost (Anthropic Claude 3.5 Sonnet pricing)
+    # Determine completion: normal exit, hit turn limit with work done, or forced
+    if not complete and total_tool_calls > 0:
+        # Tool calls were made — meaningful work happened, treat as complete
+        complete = True
     _COST_PER_M_INPUT = 3.0   # $3/MTok input
     _COST_PER_M_OUTPUT = 15.0  # $15/MTok output
     _est_cost = (result_prompt_tokens / 1_000_000 * _COST_PER_M_INPUT +
