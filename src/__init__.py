@@ -1,0 +1,3 @@
+# Nexus src/ — root package for all Nexus modules
+# Import as: from src.ralphloop import ...
+# Or add to sys.path: sys.path.insert(0, '/path/to/nexus/src')

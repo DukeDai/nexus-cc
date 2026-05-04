@@ -34,6 +34,11 @@ class LoopResult:
     final_content: str = ""
     turns: int = 0
     tool_calls: int = 0
+    total_tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    model: str = ""
     context: Optional[ImplementationContext] = None
 
 
@@ -46,11 +51,13 @@ class AgentLoopConfig:
         tool_timeout: Default timeout for tool execution in seconds (default 60).
         context_window: Context window size for budget tracking (default 100000).
         stop_on_content: Stop when LLM returns content with no tool calls (default True).
+        streaming: Enable streaming token output via callback (default False).
     """
     max_turns: int = 20
     tool_timeout: int = 60
     context_window: int = 100000
     stop_on_content: bool = True
+    streaming: bool = False
 
 
 class ToolExecutor:
@@ -432,6 +439,9 @@ def run_agent_loop(
     system_prompt: str | None = None,
     workdir: Path | None = None,
     tools: list[dict] | None = None,
+    streaming_callback: Callable[[str], None] | None = None,
+    wal: Any | None = None,
+    tdd_enforcer: Any | None = None,
 ) -> LoopResult:
     """Run the real LLM-driven closed loop.
 
@@ -457,7 +467,19 @@ def run_agent_loop(
     tools = tools or TOOL_DEFINITIONS
     workdir = workdir or Path.cwd()
 
+    # Initialize Self-Evolution engine on context (if not already set)
+    if not hasattr(context, "_evolution_engine") or context._evolution_engine is None:
+        try:
+            from ..self_evolution import SelfEvolutionEngine
+        except ImportError:
+            from self_evolution import SelfEvolutionEngine
+        context._evolution_engine = SelfEvolutionEngine()
+        context._evolution_engine.load_existing_skills()
+
     executor = ToolExecutor(workdir=workdir)
+
+    # Import uuid for generating tool call IDs
+    import uuid
 
     if system_prompt is None:
         system_prompt = (
@@ -481,30 +503,51 @@ def run_agent_loop(
     final_content = ""
     turns = 0
     total_tool_calls = 0
+    result_prompt_tokens = 0
+    result_completion_tokens = 0
+    result_total_tokens = 0
+    result_model = getattr(llm_client, "model", "") or ""
 
     for turn in range(config.max_turns):
         turns += 1
 
         # Call LLM
         try:
-            response = llm_client.complete(
-                messages=messages,
-                tools=tools,
-            )
+            if config.streaming and streaming_callback:
+                # Streaming mode: accumulate chunks via callback
+                accumulated = []
+                def _token_cb(token: str):
+                    accumulated.append(token)
+                    streaming_callback(token)
+                response = llm_client.complete_streaming(
+                    messages=messages,
+                    tools=tools,
+                    system_prompt=system_prompt,
+                    callback=_token_cb,
+                )
+                # complete_streaming may return the full response; if not, reconstruct
+                if isinstance(response, dict):
+                    content = response.get("content", "") or "".join(accumulated)
+                else:
+                    content = getattr(response, "content", "") or "".join(accumulated)
+                raw_tool_calls = (response.get("tool_calls", []) or []) if isinstance(response, dict) else getattr(response, "tool_calls", []) or []
+            else:
+                response = llm_client.complete(
+                    messages=messages,
+                    tools=tools,
+                )
+                if isinstance(response, dict):
+                    content = response.get("content", "") or ""
+                    raw_tool_calls = response.get("tool_calls", []) or []
+                else:
+                    content = getattr(response, "content", "") or ""
+                    raw_tool_calls = getattr(response, "tool_calls", []) or []
         except Exception as exc:
             messages.append({
                 "role": "user",
                 "content": f"LLM call failed: {exc}. Please try to continue or explain the error."
             })
             continue
-
-        # Parse response — handle both dict-style and object-style responses
-        if isinstance(response, dict):
-            content = response.get("content", "") or ""
-            raw_tool_calls = response.get("tool_calls", []) or []
-        else:
-            content = getattr(response, "content", "") or ""
-            raw_tool_calls = getattr(response, "tool_calls", []) or []
 
         # Normalize to list of dict tool calls
         tool_calls: list[dict] = []
@@ -521,17 +564,32 @@ def run_agent_loop(
         # Add assistant message to conversation
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
         if tool_calls:
-            # Convert ToolCall objects to dicts for message format
-            assistant_msg["tool_calls"] = [
-                {"id": tc.id, "name": tc.name, "args": tc.input}
-                for tc in tool_calls
-            ]
+            # tool_calls is already a list of dicts from normalization above
+            assistant_msg["tool_calls"] = tool_calls
         messages.append(assistant_msg)
 
-        if content:
-            final_content = content
+        # ── Token counting & cost tracking ─────────────────────────────
+        if isinstance(response, dict):
+            usage_data = response.get("usage", {}) or {}
+            prompt_tokens = usage_data.get("input_tokens", usage_data.get("prompt_tokens", 0))
+            completion_tokens = usage_data.get("output_tokens", usage_data.get("completion_tokens", 0))
+            resp_model = response.get("model", getattr(llm_client, "model", "") or "")
+        else:
+            usage_obj = getattr(response, "usage", None) or getattr(response, "token_usage", None)
+            if usage_obj:
+                prompt_tokens = getattr(usage_obj, "input_tokens", 0) or getattr(usage_obj, "prompt_tokens", 0)
+                completion_tokens = getattr(usage_obj, "output_tokens", 0) or getattr(usage_obj, "completion_tokens", 0)
+            else:
+                prompt_tokens = completion_tokens = 0
+            resp_model = getattr(response, "model", getattr(llm_client, "model", "") or "")
 
-        # Stop if no tool calls and we have content
+        total_tokens = prompt_tokens + completion_tokens
+        result_prompt_tokens += prompt_tokens
+        result_completion_tokens += completion_tokens
+        result_total_tokens += total_tokens
+        result_model = resp_model or result_model
+
+        # ── Stop if no tool calls and we have content ──────────────────────
         if not tool_calls:
             if content and config.stop_on_content:
                 complete = True
@@ -547,14 +605,41 @@ def run_agent_loop(
         # Execute tool calls
         for tc in tool_calls:
             total_tool_calls += 1
-            tc_id = tc.id
-            tc_name = tc.name
-            tc_args = tc.input if isinstance(tc.input, dict) else {}
+            tc_id = tc.get("id", "") or str(uuid.uuid4())[:8]
+            tc_name = tc.get("name", "")
+            tc_args = tc.get("args", tc.get("input", {}))
+
+            # WAL: log tool call BEFORE execution (crash recovery journaling)
+            if wal is not None:
+                wal.log_tool_call(tc_name, tc_args, tc_id)
 
             result_str = executor.execute(tc_name, tc_args)
             context.add_tool_result(tc_name, result_str, success="ERROR" not in result_str)
 
-            # Add tool result to messages (Anthropic tool_result format)
+            # WAL: log tool result AFTER execution
+            if wal is not None:
+                wal.log_tool_result(tc_id, result_str, error=None if "ERROR" not in result_str else result_str)
+
+            # Self-Evolution: learn from errors
+            evolution: Any | None = getattr(context, "_evolution_engine", None)
+            if evolution:
+                # Lazy import to avoid top-level import cycle
+                try:
+                    from ..self_evolution import SelfEvolutionEngine
+                except ImportError:
+                    from self_evolution import SelfEvolutionEngine
+                had_error = evolution.monitor_error(
+                    tool_name=tc_name,
+                    tool_args=tc_args,
+                    tool_result=result_str,
+                    task_context=getattr(context, "task", ""),
+                )
+                if had_error:
+                    skill = evolution.analyze_and_capture()
+                    if skill:
+                        evolution.store_skill(skill)
+
+            # Add tool result to messages (plain string for MiniMax API compatibility)
             messages.append({
                 "role": "user",
                 "content": result_str,
@@ -571,10 +656,22 @@ def run_agent_loop(
     # Update context
     context.messages = messages
 
+
+    # Estimate cost (Anthropic Claude 3.5 Sonnet pricing)
+    _COST_PER_M_INPUT = 3.0   # $3/MTok input
+    _COST_PER_M_OUTPUT = 15.0  # $15/MTok output
+    _est_cost = (result_prompt_tokens / 1_000_000 * _COST_PER_M_INPUT +
+                 result_completion_tokens / 1_000_000 * _COST_PER_M_OUTPUT)
+
     return LoopResult(
         complete=complete,
         final_content=final_content,
         turns=turns,
         tool_calls=total_tool_calls,
+        total_tokens=result_total_tokens,
+        prompt_tokens=result_prompt_tokens,
+        completion_tokens=result_completion_tokens,
+        estimated_cost_usd=round(_est_cost, 6),
+        model=result_model,
         context=context,
     )

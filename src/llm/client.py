@@ -7,8 +7,10 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Generator, Optional
 
+import anthropic
+import openai
 import requests
 
 logger = logging.getLogger(__name__)
@@ -19,6 +21,7 @@ class Provider(Enum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     OLLAMA = "ollama"
+    MINIMAX_CN = "minimax-cn"  # MiniMax Chinese API (Anthropic-compatible)
 
 
 class APIError(Exception):
@@ -145,6 +148,8 @@ class LLMClient:
             self.base_url = "https://api.openai.com/v1"
         elif provider == Provider.OLLAMA:
             self.base_url = base_url or "http://localhost:11434"
+        elif provider == Provider.MINIMAX_CN:
+            self.base_url = base_url or "https://api.minimaxi.com/anthropic"
         
         # Track context usage
         self.total_input_tokens = 0
@@ -169,6 +174,13 @@ class LLMClient:
             })
         elif self.provider == Provider.OLLAMA:
             self._session.headers.update({
+                "content-type": "application/json",
+            })
+        elif self.provider == Provider.MINIMAX_CN:
+            self._session.headers.update({
+                "Authorization": f"Bearer {self.api_key}",
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             })
     
@@ -222,26 +234,70 @@ class LLMClient:
                 body=body,
             )
     
+    def _normalize_messages(self, messages: list[dict]) -> list[dict]:
+        """Normalize message roles for API compatibility.
+
+        vLLM / MiniMax don't accept role='tool' — convert to role='user'
+        with content prefixed by 'Tool: <name>\nResult: ...'.
+        """
+        normalized = []
+        for msg in messages:
+            if msg.get("role") == "tool":
+                name = msg.get("name", "unknown_tool")
+                content = msg.get("content", "")
+                # Re-encode as user message with tool context
+                normalized.append({
+                    "role": "user",
+                    "content": f"[Tool: {name}]\nResult: {content}",
+                })
+            else:
+                normalized.append(msg)
+        return normalized
+
     def _build_anthropic_messages_payload(
         self,
         messages: list[dict],
         tools: list[dict],
         system_prompt: str,
     ) -> dict:
-        """Build Anthropic Messages API payload."""
-        payload = {
+        """Build Anthropic Messages API payload.
+
+        Handles the Anthropic Messages API constraint: system content can be
+        EITHER in messages[0] as {'role': 'system'} OR in the top-level
+        'system' param, but NOT both. We extract any system-role messages,
+        merge them with system_prompt, put them as the top-level param, and
+        return only user/assistant messages in the messages array.
+        """
+        # Separate system-role messages from user/assistant messages
+        system_parts: list[str] = []
+        conversation_messages: list[dict] = []
+
+        for msg in messages:
+            if msg.get("role") == "system":
+                content = msg.get("content") or ""
+                if content:
+                    system_parts.append(content)
+            else:
+                conversation_messages.append(msg)
+
+        # Prepend explicit system_prompt if provided
+        if system_prompt:
+            system_parts.insert(0, system_prompt)
+
+        # Build final payload
+        payload: dict = {
             "model": self.model,
-            "messages": messages,
+            "messages": conversation_messages,
             "max_tokens": 4096,
         }
-        
-        if system_prompt:
-            payload["system"] = system_prompt
-        
+
+        if system_parts:
+            payload["system"] = "\n\n".join(system_parts)
+
         if tools:
             anthropic_tools = self._convert_tools_to_anthropic(tools)
             payload["tools"] = anthropic_tools
-        
+
         return payload
     
     def _build_openai_payload(
@@ -297,14 +353,26 @@ class LLMClient:
         anthropic_tools = []
         
         for tool in tools:
-            if "type" in tool and tool["type"] == "function":
+            if tool.get("type") == "function":
+                # OpenAI function-calling format
                 func = tool.get("function", {})
                 anthropic_tools.append({
                     "name": func.get("name"),
                     "description": func.get("description", ""),
                     "input_schema": func.get("parameters", {"type": "object"}),
                 })
+            elif "input_schema" in tool:
+                # Already in Anthropic format
+                anthropic_tools.append(tool)
+            elif "parameters" in tool:
+                # OpenAI-style: {"name": ..., "parameters": ...} → convert to Anthropic
+                anthropic_tools.append({
+                    "name": tool.get("name"),
+                    "description": tool.get("description", ""),
+                    "input_schema": tool["parameters"],
+                })
             else:
+                # Fallback: pass through as-is
                 anthropic_tools.append(tool)
         
         return anthropic_tools
@@ -490,7 +558,10 @@ class LLMClient:
             Response object with content, tool_calls, usage, etc.
         """
         tools = tools or []
-        
+
+        # Normalize messages: convert "role": "tool" → "role": "user" for vLLM/minimax compatibility
+        messages = self._normalize_messages(messages)
+
         if self.provider == Provider.ANTHROPIC:
             payload = self._build_anthropic_messages_payload(messages, tools, system_prompt)
             url = f"{self.base_url}/v1/messages"
@@ -500,6 +571,10 @@ class LLMClient:
         elif self.provider == Provider.OLLAMA:
             payload = self._build_ollama_payload(messages, tools, system_prompt)
             url = f"{self.base_url}/api/chat"
+        elif self.provider == Provider.MINIMAX_CN:
+            # MiniMax uses Anthropic-compatible API endpoint
+            payload = self._build_anthropic_messages_payload(messages, tools, system_prompt)
+            url = f"{self.base_url}/v1/messages"
         else:
             raise APIError(f"Unknown provider: {self.provider}")
         
@@ -519,6 +594,9 @@ class LLMClient:
                 return self._parse_openai_response(response)
             elif self.provider == Provider.OLLAMA:
                 return self._parse_ollama_response(response)
+            elif self.provider == Provider.MINIMAX_CN:
+                # MiniMax uses Anthropic-compatible response format
+                return self._parse_anthropic_response(response)
                 
         except requests.exceptions.Timeout:
             raise APIError(f"Request timed out after {self.timeout}s")
@@ -530,204 +608,222 @@ class LLMClient:
         messages: list[dict],
         tools: Optional[list[dict]] = None,
         system_prompt: str = "",
-        callback: Optional[Callable[[dict], None]] = None,
         **kwargs,
-    ) -> Response:
+    ) -> Generator[dict, None, None]:
         """
-        Make a streaming completion request.
+        Make a streaming completion request, yielding text chunks and tool calls in real-time.
+        
+        Yields events:
+            - {"type": "text", "content": "..."} for text chunks
+            - {"type": "tool_call", "tool_call": {"id", "name", "input"}} when a tool call is complete
         
         Args:
             messages: List of message dicts with 'role' and 'content'
             tools: List of tool definitions
             system_prompt: System prompt to prepend
-            callback: Function called with each streaming chunk
-                     Callback receives dict with keys: content, tool_call, done, usage
             **kwargs: Additional provider-specific arguments
             
-        Returns:
-            Final Response object with aggregated content and usage
+        Yields:
+            Dict events with type 'text' or 'tool_call'
         """
         tools = tools or []
-        
+
+        # Normalize messages for vLLM/minimax compatibility
+        messages = self._normalize_messages(messages)
+
         if self.provider == Provider.ANTHROPIC:
-            payload = self._build_anthropic_messages_payload(messages, tools, system_prompt)
-            payload["stream"] = True
-            url = f"{self.base_url}/v1/messages"
+            yield from self._stream_anthropic(messages, tools, system_prompt, **kwargs)
         elif self.provider == Provider.OPENAI:
-            payload = self._build_openai_payload(messages, tools, system_prompt)
-            payload["stream"] = True
-            url = f"{self.base_url}/chat/completions"
+            yield from self._stream_openai(messages, tools, system_prompt, **kwargs)
         elif self.provider == Provider.OLLAMA:
-            payload = self._build_ollama_payload(messages, tools, system_prompt)
-            payload["stream"] = True
-            url = f"{self.base_url}/api/chat"
+            yield from self._stream_ollama(messages, tools, system_prompt, **kwargs)
+        elif self.provider == Provider.MINIMAX_CN:
+            # MiniMax uses Anthropic-compatible streaming
+            yield from self._stream_anthropic(messages, tools, system_prompt, **kwargs)
         else:
             raise APIError(f"Unknown provider: {self.provider}")
+
+    def _stream_anthropic(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system_prompt: str,
+        **kwargs,
+    ) -> Generator[dict, None, None]:
+        """Stream Anthropic messages using the official SDK."""
+        client = anthropic.Anthropic(api_key=self.api_key, base_url=self.base_url)
         
-        payload.update(kwargs)
+        # Convert messages to Anthropic format
+        anthropic_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                continue  # handled separately
+            anthropic_messages.append({
+                "role": msg["role"],
+                "content": msg["content"],
+            })
         
-        aggregated_content = ""
-        aggregated_tool_calls = {}
-        total_input_tokens = 0
-        total_output_tokens = 0
-        finish_reason = ""
+        # Prepare tool format
+        anthropic_tools = self._convert_tools_to_anthropic(tools) if tools else []
+        
+        # Prepare kwargs (e.g., max_tokens)
+        stream_params = {"max_tokens": kwargs.get("max_tokens", 4096)}
+        
+        with client.messages.stream(
+            model=self.model,
+            messages=anthropic_messages,
+            system=system_prompt if system_prompt else None,
+            tools=anthropic_tools if anthropic_tools else None,
+            **stream_params,
+        ) as stream:
+            aggregated_tool_calls: dict[str, dict] = {}
+            
+            for text_event in stream.text_events:
+                if text_event.type == "text_block_delta":
+                    yield {"type": "text", "content": text_event.paragraph.text}
+            
+            for tool_event in stream.tool_events:
+                if tool_event.type == "tool_use_block_start":
+                    tool_block = tool_event.tool_use_block
+                    aggregated_tool_calls[tool_block.id] = {
+                        "id": tool_block.id,
+                        "name": tool_block.name,
+                        "input": tool_block.input or {},
+                    }
+                elif tool_event.type == "tool_use_delta":
+                    delta = tool_event.partial_json
+                    if aggregated_tool_calls:
+                        tc = list(aggregated_tool_calls.values())[-1]
+                        tc["input"] = tc.get("input", "")
+                        if isinstance(tc["input"], str):
+                            tc["input"] += delta
+                        else:
+                            tc["input"] = (tc.get("_raw", "") + delta)
+                elif tool_event.type == "tool_use_block_stop":
+                    if aggregated_tool_calls:
+                        tc = list(aggregated_tool_calls.values())[-1]
+                        # Parse the accumulated input JSON
+                        raw_input = tc.get("input", "")
+                        if isinstance(raw_input, str):
+                            try:
+                                tc["input"] = json.loads(raw_input) if raw_input else {}
+                            except json.JSONDecodeError:
+                                tc["input"] = {"_raw": raw_input}
+                        yield {
+                            "type": "tool_call",
+                            "tool_call": {
+                                "id": tc["id"],
+                                "name": tc["name"],
+                                "input": tc["input"],
+                            },
+                        }
+
+    def _stream_openai(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system_prompt: str,
+        **kwargs,
+    ) -> Generator[dict, None, None]:
+        """Stream OpenAI Chat Completions using the official SDK."""
+        openai_tools = self._convert_tools_to_openai(tools) if tools else []
+        
+        # Build messages with system prompt
+        processed_messages = messages.copy()
+        if system_prompt:
+            processed_messages.insert(0, {"role": "system", "content": system_prompt})
+        
+        client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+        
+        stream = client.chat.completions.create(
+            model=self.model,
+            messages=processed_messages,
+            tools=openai_tools if openai_tools else None,
+            stream=True,
+            **kwargs,
+        )
+        
+        aggregated_tool_calls: dict[str, dict] = {}
+        
+        for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else {}
+            
+            # Handle text content
+            if delta.content:
+                yield {"type": "text", "content": delta.content}
+            
+            # Handle tool calls
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    if tc.id:
+                        aggregated_tool_calls[tc.id] = {
+                            "id": tc.id,
+                            "function": {
+                                "name": tc.function.name if tc.function else "",
+                                "arguments": tc.function.arguments if tc.function else "",
+                            },
+                        }
+                    elif aggregated_tool_calls:
+                        # Append to last tool call's arguments
+                        last_tc_id = list(aggregated_tool_calls.keys())[-1]
+                        if tc.function and tc.function.arguments:
+                            aggregated_tool_calls[last_tc_id]["function"]["arguments"] += tc.function.arguments
+            
+            # Check if this chunk indicates completion of a tool call
+            if chunk.choices and chunk.choices[0].finish_reason == "tool_calls":
+                for tc_id, tc_data in aggregated_tool_calls.items():
+                    yield {
+                        "type": "tool_call",
+                        "tool_call": {
+                            "id": tc_id,
+                            "name": tc_data["function"]["name"],
+                            "input": tc_data["function"]["arguments"],
+                        },
+                    }
+                aggregated_tool_calls = {}
+
+    def _stream_ollama(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system_prompt: str,
+        **kwargs,
+    ) -> Generator[dict, None, None]:
+        """Stream Ollama responses."""
+        processed_messages = messages.copy()
+        if system_prompt:
+            processed_messages.insert(0, {"role": "system", "content": system_prompt})
+        
+        ollama_tools = self._convert_tools_to_ollama(tools) if tools else []
+        
+        payload = {
+            "model": self.model,
+            "messages": processed_messages,
+            "stream": True,
+        }
+        if ollama_tools:
+            payload["tools"] = ollama_tools
+        
+        url = f"{self.base_url}/api/chat"
         
         try:
             response = self._session.post(url, json=payload, timeout=self.timeout, stream=True)
-            
             if response.status_code != 200:
                 self._handle_http_error(response)
             
-            if self.provider == Provider.ANTHROPIC:
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    
-                    if line.startswith(b":") or line.strip() == b"":
-                        continue
-                    
-                    if line.startswith(b"data: "):
-                        data_str = line[6:].decode("utf-8")
-                        if data_str == "[DONE]":
-                            break
-                        
-                        try:
-                            data = json.loads(data_str)
-                            chunk = self._process_anthropic_stream_chunk(data)
-                        except json.JSONDecodeError:
-                            continue
-                    else:
-                        try:
-                            data = json.loads(line.decode("utf-8"))
-                            chunk = self._process_anthropic_stream_chunk(data)
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            continue
-                    
-                    if chunk.get("content"):
-                        aggregated_content += chunk["content"]
-                    if chunk.get("tool_call"):
-                        tc_id = chunk["tool_call"]["id"]
-                        if tc_id not in aggregated_tool_calls:
-                            aggregated_tool_calls[tc_id] = chunk["tool_call"]
-                        else:
-                            existing = aggregated_tool_calls[tc_id]
-                            if "input" in chunk["tool_call"]:
-                                existing.setdefault("input", "")
-                                if isinstance(existing["input"], str):
-                                    existing["input"] = json.loads(existing["input"]) if existing["input"] else {}
-                                existing["input"].setdefault("_raw", "")
-                                existing["input"]["_raw"] += chunk["tool_call"].get("input", "")
-                    
-                    if chunk.get("usage"):
-                        total_input_tokens = chunk["usage"].get("input_tokens", 0)
-                        total_output_tokens = chunk["usage"].get("output_tokens", 0)
-                    
-                    if chunk.get("done"):
-                        finish_reason = chunk.get("stop_reason", "stop")
-                    
-                    if callback:
-                        callback(chunk)
-            
-            elif self.provider == Provider.OPENAI:
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    
-                    if line.startswith(b"data: "):
-                        data_str = line[6:].decode("utf-8")
-                        if data_str == "[DONE]":
-                            break
-                        
-                        try:
-                            data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        
-                        chunk = self._process_openai_stream_chunk(data)
-                        
-                        if chunk.get("content"):
-                            aggregated_content += chunk["content"]
-                        if chunk.get("tool_call"):
-                            tc_id = chunk["tool_call"].get("id")
-                            if tc_id:
-                                if tc_id not in aggregated_tool_calls:
-                                    aggregated_tool_calls[tc_id] = chunk["tool_call"]
-                                else:
-                                    existing = aggregated_tool_calls[tc_id]
-                                    if "function" in chunk["tool_call"]:
-                                        existing["function"] = existing.get("function", {})
-                                        existing["function"].setdefault("arguments", "")
-                                        existing["function"]["arguments"] += chunk["tool_call"]["function"].get("arguments", "")
-                    
-                    if callback:
-                        callback(chunk)
-            
-            elif self.provider == Provider.OLLAMA:
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    
-                    try:
-                        data = json.loads(line.decode("utf-8"))
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        continue
-                    
-                    chunk = self._process_ollama_stream_chunk(data)
-                    
-                    if chunk.get("content"):
-                        aggregated_content += chunk["content"]
-                    if chunk.get("done"):
-                        finish_reason = "stop"
-                    
-                    if callback:
-                        callback(chunk)
-            
-            tool_calls = []
-            for tc_id, tc_data in aggregated_tool_calls.items():
-                if self.provider == Provider.ANTHROPIC:
-                    tool_calls.append(ToolCall(
-                        id=tc_id,
-                        name=tc_data.get("name", ""),
-                        input=tc_data.get("input", {}),
-                        tool_use_id=tc_id,
-                    ))
-                else:
-                    func = tc_data.get("function", {})
-                    args = func.get("arguments", "")
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except json.JSONDecodeError:
-                            args = {"_raw": args}
-                    tool_calls.append(ToolCall(
-                        id=tc_id,
-                        name=func.get("name", ""),
-                        input=args,
-                        function_call_id=tc_id,
-                    ))
-            
-            self.total_input_tokens += total_input_tokens
-            self.total_output_tokens += total_output_tokens
-            self.total_requests += 1
-            
-            usage = Usage(
-                input_tokens=total_input_tokens,
-                output_tokens=total_output_tokens,
-                total_tokens=total_input_tokens + total_output_tokens,
-            )
-            
-            total_tokens = usage.total_tokens
-            budget_used = (total_tokens / self.context_window) * 100 if self.context_window > 0 else 0
-            
-            return Response(
-                content=aggregated_content,
-                tool_calls=tool_calls,
-                finish_reason=finish_reason,
-                usage=usage,
-                context_window=self.context_window,
-                budget_used=round(budget_used, 2),
-            )
-            
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                
+                chunk = self._process_ollama_stream_chunk(data)
+                if chunk.get("content"):
+                    yield {"type": "text", "content": chunk["content"]}
+                if chunk.get("done"):
+                    break
         except requests.exceptions.Timeout:
             raise APIError(f"Request timed out after {self.timeout}s")
         except requests.exceptions.ConnectionError as e:

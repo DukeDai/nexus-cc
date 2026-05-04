@@ -13,7 +13,7 @@ from pathlib import Path
 # Ensure src/ is on path
 sys.path.insert(0, '/Users/dukedai/Dev/nexus')
 
-from nexus_core import LLMClient
+from nexus_core import LLMClient  # noqa: F401
 from src.ralphloop import (
     ImplementationContext,
     TDDEnforcer,

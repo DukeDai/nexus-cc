@@ -22,7 +22,7 @@ from enum import Enum, auto
 from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ralphloop.states import RalphState
+    from .states import RalphState
 
 
 class TransitionTrigger(Enum):
@@ -116,7 +116,7 @@ _TRANSITION_TABLE: Optional[list[Transition]] = None
 
 def _build_transition_table() -> list[Transition]:
     """Build the transition table with proper imports."""
-    from ralphloop.states import RalphState
+    from .states import RalphState
 
     return [
         # PLAN → ACT: Valid spec produced
@@ -279,7 +279,7 @@ def get_valid_transitions(
 
 def get_abort_transition(current_state: 'RalphState') -> Optional[Transition]:
     """Get the ABORT transition for a given state, if one exists."""
-    from ralphloop.states import RalphState
+    from .states import RalphState
 
     for t in get_transition_table():
         if t.from_state == current_state and t.to_state == RalphState.ABORT:

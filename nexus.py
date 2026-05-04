@@ -1,507 +1,504 @@
 #!/usr/bin/env python3
 """
-Nexus — Next-Generation Autonomous Coding Agent
+Nexus — RalphLoop-driven Coding Agent (v5 Architecture)
 
-RalphLoop-driven autonomous coding agent with:
-- Multi-agent specialization (Specifier, Implementer, Reviewer, Security)
-- Mandatory TDD enforcement
-- MCP server integration
-- Interactive TUI
-- Session persistence
-- Git worktree support
-- Hook system
-- CLAUDE.md hierarchy
+Unified CLI entry point. All imports go through src/ packages.
+RalphLoop: PLAN → ACT → VERIFY → REFLECT → (COMMIT|RETRY|ESCALATE|ABORT)
 """
 
 from __future__ import annotations
 
-import argparse
+import os
 import sys
 import json
-import os
+import argparse
+import threading
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
 
-# ── Nexus source path ────────────────────────────────────────────────────────
-NEXUS_SRC = Path(__file__).parent / "src"
-sys.path.insert(0, str(NEXUS_SRC))
+# ── Nexus src path ────────────────────────────────────────────────────────────
+_NEXUS_SRC = Path(__file__).parent / "src"
+if str(_NEXUS_SRC) not in sys.path:
+    sys.path.insert(0, str(_NEXUS_SRC))
 
-# ── Core imports ──────────────────────────────────────────────────────────────
+# ── Core RalphLoop Engine ────────────────────────────────────────────────────
 from ralphloop import (
     RalphLoop,
     RalphState,
     ContextTier,
     Checkpoint,
+    RalphLoopMetrics,
     EscalationOption,
+    TransitionTrigger,
+    get_valid_transitions,
 )
-from context import ContextBudgetMonitor, BudgetTier, ClaudeMD, WorktreeManager
-from agents import (
-    SpecifierAgent,
-    ImplementerAgent,
-    ReviewerAgent,
-    SecurityAgent,
-    AgentResult,
+from ralphloop.implementation_context import ImplementationContext
+from ralphloop.claude_md_loader import (
+    load_claude_md,
+    find_project_root,
+    build_llm_system_prompt,
+    get_project_context,
 )
-from verification import VerificationPipeline
-from skills import MistakeCapture, SkillAuthor, SkillLoader
-from session import SessionManager, SessionStore
-from hooks import HookManager, HookEvent
-from tui import NexusTUI
+from ralphloop.agent_loop import (
+    run_agent_loop,
+    TOOL_DEFINITIONS,
+    ToolExecutor,
+    AgentLoopConfig,
+)
+from ralphloop.tdd_enforcer import TDDEnforcer
+from llm.client import LLMClient, Provider
+from llm.model_router import ModelRouter, TaskType
+from self_evolution import SelfEvolutionEngine
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Shared utilities
+# Provider / Model Detection
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _colored(status: str, color: str) -> str:
-    colors = {"green": "\033[92m", "yellow": "\033[93m", "red": "\033[91m",
-              "blue": "\033[94m", "reset": "\033[0m"}
-    return f"{colors.get(color, '')}{status}{colors['reset']}"
+def _detect_provider() -> tuple[Provider, str, str, str]:
+    """Auto-detect best available LLM provider. Returns (provider, api_key, base_url, model)."""
+    # Check Claude settings (CC Switch)
+    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_env = {}
+    if settings_path.exists():
+        try:
+            with open(settings_path) as f:
+                settings_env = json.load(f).get("env", {})
+        except Exception:
+            pass
 
+    # ENV takes precedence
+    auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or settings_env.get("ANTHROPIC_AUTH_TOKEN", "")
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or settings_env.get("ANTHROPIC_API_KEY", "")
+    base_url = os.environ.get("ANTHROPIC_BASE_URL") or settings_env.get("ANTHROPIC_BASE_URL", "")
+    model = os.environ.get("ANTHROPIC_MODEL") or settings_env.get("ANTHROPIC_MODEL", "")
 
-def _print(msg: str, color: str = "reset") -> None:
-    print(_colored(msg, color))
+    # Set env for subprocess access
+    if auth_token:
+        os.environ["ANTHROPIC_AUTH_TOKEN"] = auth_token
+    if api_key:
+        os.environ["ANTHROPIC_API_KEY"] = api_key
+    if base_url:
+        os.environ["ANTHROPIC_BASE_URL"] = base_url
+    if model:
+        os.environ["ANTHROPIC_MODEL"] = model
 
-
-def _load_claudemd(project_path: str) -> Optional[ClaudeMD]:
-    """Load CLAUDE.md hierarchy for the project."""
+    if auth_token:
+        return Provider.ANTHROPIC, auth_token, base_url, model
+    if api_key:
+        return Provider.ANTHROPIC, api_key, base_url, model
+    if os.environ.get("OPENAI_API_KEY"):
+        return Provider.OPENAI, os.environ["OPENAI_API_KEY"], "", ""
+    # Ollama (local)
     try:
-        loader = ClaudeMD(project_path=project_path)
-        return loader.load()
+        import urllib.request
+        req = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
+        if req.status == 200:
+            return Provider.OLLAMA, "local", "", ""
     except Exception:
-        return None
+        pass
+    return Provider.ANTHROPIC, "", base_url, ""
+
+
+def _get_model_for_provider(provider: Provider, settings_model: str = "") -> str:
+    """Get best model for provider. Prefers: env > settings.json > provider default."""
+    if os.environ.get("ANTHROPIC_MODEL"):
+        return os.environ["ANTHROPIC_MODEL"]
+    if settings_model:
+        return settings_model
+    if provider == Provider.ANTHROPIC:
+        return "claude-sonnet-4-20250514"
+    if provider == Provider.OPENAI:
+        return os.environ.get("OPENAI_MODEL", "gpt-4o")
+    if provider == Provider.OLLAMA:
+        return os.environ.get("OLLAMA_MODEL", "llama3")
+    return "claude-sonnet-4-20250514"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Run command — execute RalphLoop
+# RalphLoop Executor (connects orchestrator to agent_loop)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class RalphLoopExecutor:
+    """Bridges RalphLoop orchestrator with run_agent_loop.
+
+    The orchestrator handles state machine logic (transitions, retries, escalation).
+    This class handles the actual LLM+tools execution by calling run_agent_loop.
+    """
+
+    def __init__(
+        self,
+        project_path: str,
+        tdd_enabled: bool = True,
+        system_prompt: str | None = None,
+        streaming: bool = False,
+    ):
+        self.project_path = Path(project_path)
+        self.tdd_enabled = tdd_enabled
+
+        # Detect LLM provider
+        self.provider, self.api_key, detected_base_url, settings_model = _detect_provider()
+        self.model = _get_model_for_provider(self.provider, settings_model)
+
+        # Store streaming preference
+        self.streaming = streaming
+
+        # LLM client — prefer detected base_url, fall back to env
+        base_url = detected_base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
+        self.llm = LLMClient(
+            provider=self.provider,
+            model=self.model,
+            api_key=self.api_key,
+            base_url=base_url,
+        )
+
+        # Model router for smart routing
+        self.router = ModelRouter(api_keys={self.provider: self.api_key})
+
+        # Context
+        self.context = ImplementationContext(task="", messages=[], tool_results=[], test_results=[], error_log=[])
+        # Self-Evolution: learn from errors permanently
+        self.context._evolution_engine = SelfEvolutionEngine()
+
+        # Agent loop config
+        self.config = AgentLoopConfig(
+            max_turns=200,
+            tool_timeout=30,
+            context_window=200_000,
+            stop_on_content=False,
+            streaming=streaming,
+        )
+
+        # System prompt from CLAUDE.md
+        if system_prompt:
+            self.system_prompt = system_prompt
+        else:
+            claude_md = load_claude_md(str(self.project_path))
+            self.system_prompt = build_llm_system_prompt(str(self.project_path)) if claude_md else ""
+
+        # TDD enforcer (minimal, just tracks state)
+        self.tdd_enforcer = TDDEnforcer() if self.tdd_enabled else None
+
+        # RalphLoop orchestrator state
+        self.state = RalphState.PLAN
+        self.retries = 0
+        self.MAX_RETRIES = 3
+        self.turns = 0
+
+    def execute_task(self, task: str) -> dict:
+        """Execute a task through RalphLoop states.
+
+        Returns dict with: success, turns, final_state, content, tool_count
+        """
+        self.context.task = task
+        self.retries = 0
+        self.turns = 0
+
+        print(f"\n{'='*60}")
+        print(f"Nexus RalphLoop | Task: {task[:60]}")
+        print(f"Provider: {self.provider.value} | Model: {self.model}")
+        print(f"Project: {self.project_path}")
+        print(f"TDD: {'ON' if self.tdd_enabled else 'OFF'}")
+        print(f"Streaming: {'ON' if self.streaming else 'OFF'}")
+        print(f"{'='*60}\n")
+
+        # Streaming callback for real-time token output
+        def _streaming_cb(token: str):
+            print(token, end="", flush=True)
+
+        # Wrap run_agent_loop to inject streaming
+        def _run_loop(task_prompt: str, state_name: str):
+            if self.streaming:
+                print(f"\n[{state_name}] ", end="", flush=True)
+            result = run_agent_loop(
+                task=task_prompt,
+                llm_client=self.llm,
+                context=self.context,
+                config=self.config,
+                system_prompt=self.system_prompt,
+                workdir=self.project_path,
+                tools=TOOL_DEFINITIONS,
+                streaming_callback=_streaming_cb if self.streaming else None,
+            )
+            if self.streaming:
+                print()  # newline after streaming output
+            return result
+
+        # ── PLAN state ──────────────────────────────────────────
+        self.state = RalphState.PLAN
+        print(f"[PLAN] Analyzing task...")
+        plan_prompt = (
+            f"TASK: {task}\n\n"
+            f"Work directory: {self.project_path}\n\n"
+            f"First, understand the task. Then respond with a brief plan "
+            f"(what files to create/modify, what tools to use) before taking any action."
+        )
+        result = _run_loop(plan_prompt, "PLAN")
+        self.turns += result.turns
+
+        if not result.complete:
+            return self._handle_failure("PLAN", result)
+
+        # ── ACT state ───────────────────────────────────────────
+        self.state = RalphState.ACT
+        print(f"\n[ACT] Executing plan...")
+        act_prompt = f"TASK: {task}\n\nExecute the plan. Use tools to create/modify files, run tests, etc."
+        result = _run_loop(act_prompt, "ACT")
+        self.turns += result.turns
+
+        # ── VERIFY state ───────────────────────────────────────
+        self.state = RalphState.VERIFY
+        print(f"\n[VERIFY] Checking results...")
+        verify_prompt = (
+            f"Verify the results of: {task}\n\n"
+            f"Tool results so far:\n" + self._format_tool_results()
+        )
+        result = _run_loop(verify_prompt, "VERIFY")
+        self.turns += result.turns
+
+        # Check for errors in tool results
+        if self._has_errors():
+            if self.retries < self.MAX_RETRIES:
+                self.retries += 1
+                print(f"\n[!] Errors detected — retry {self.retries}/{self.MAX_RETRIES}")
+                return self.execute_task(task)  # Retry
+            else:
+                print(f"\n[!!] Max retries exceeded")
+                return {
+                    "success": False,
+                    "turns": self.turns,
+                    "final_state": "ESCALATE",
+                    "content": self._format_tool_results(),
+                    "tool_count": len(self.context.tool_results),
+                    "error": "Max retries exceeded",
+                }
+
+        # ── REFLECT state ───────────────────────────────────────
+        self.state = RalphState.REFLECT
+        print(f"\n[REFLECT] Evaluating...")
+        reflect_prompt = (
+            f"REFLECT on the completed work for: {task}\n\n"
+            f"Tool results:\n{self._format_tool_results()}\n\n"
+            f"Is the task complete? Should you commit? Reply with:\n"
+            f"  - Summary of what was done\n"
+            f"  - Whether to COMMIT or continue working"
+        )
+        reflect_result = _run_loop(reflect_prompt, "REFLECT")
+        self.turns += reflect_result.turns
+
+        # Determine if done — more robust heuristic
+        reflect_content = (reflect_result.final_content or "").lower()
+        tool_results_content = " ".join(str(tr.get("result", "")) for tr in self.context.tool_results).lower()
+        has_errors = any("error:" in str(tr.get("result", "")).lower() for tr in self.context.tool_results)
+        # Success if: no errors AND (commit mentioned OR task appears complete)
+        done = (
+            not has_errors
+            and (
+                "commit" in reflect_content
+                or ("done" in reflect_content and "not done" not in reflect_content)
+                or ("complete" in reflect_content and "not complete" not in reflect_content)
+                or ("finished" in reflect_content)
+            )
+        )
+        final_state = "COMMIT" if done else "ACT"
+
+        print(f"\n{'='*60}")
+        print(f"Final State: {final_state}")
+        print(f"Total Turns: {self.turns}")
+        print(f"Tool Calls: {len(self.context.tool_results)}")
+        print(f"{'='*60}")
+
+        return {
+            "success": done,
+            "turns": self.turns,
+            "final_state": final_state,
+            "content": reflect_result.final_content,
+            "tool_count": len(self.context.tool_results),
+        }
+
+    def _has_errors(self) -> bool:
+        for tr in self.context.tool_results:
+            content = str(tr.get("result", ""))
+            if "ERROR:" in content or "error:" in content:
+                return True
+        return False
+
+    def _format_tool_results(self) -> str:
+        lines = []
+        for tr in self.context.tool_results[-10:]:
+            name = tr.get("tool", "?")
+            result = str(tr.get("result", ""))[:200]
+            lines.append(f"[{name}] {result}")
+        return "\n".join(lines) if lines else "(no tool results yet)"
+
+    def _handle_failure(self, phase: str, result) -> dict:
+        print(f"\n[FAIL] {phase} failed: {result.final_content[:200] if result.final_content else 'no content'}")
+        return {
+            "success": False,
+            "turns": self.turns,
+            "final_state": "ABORT",
+            "content": result.final_content,
+            "tool_count": len(self.context.tool_results),
+            "error": f"{phase} phase failed",
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CLI Commands
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """Execute RalphLoop with a task queue."""
-    project_path = Path(args.project or Path.cwd()).resolve()
-    _print(f"Nexus starting on: {project_path}", "blue")
+    """Run a task through RalphLoop."""
+    project_path = Path(args.workdir or os.getcwd()).expanduser().resolve()
 
-    # Load CLAUDE.md context
-    claudemd = _load_claudemd(str(project_path))
-    if claudemd:
-        _print(f"CLAUDE.md loaded: {len(claudemd.content)} chars", "green")
-
-    # Build task queue
-    if args.tasks_file:
-        tasks = json.loads(Path(args.tasks_file).read_text())
-    elif args.task:
-        tasks = [{"description": args.task, "type": "generic"}]
-    else:
-        tasks = [{"description": "Implement task", "type": "generic"}]
-
-    # Context budget monitor
-    context_monitor_fn = lambda: 25.0  # Default budget estimate
-    if args.max_context:
-        cbm = ContextBudgetMonitor(max_context_tokens=args.max_context)
-        # Estimate based on conversation length
-        context_monitor_fn = lambda: 0.0  # Placeholder — real impl would track
-
-    # Session manager
-    session_store = SessionStore()
-    session_mgr = SessionManager(
-        project_path=str(project_path),
-        store=session_store,
-        checkpoint_dir=project_path / ".nexus" / "checkpoints",
-    )
-
-    # Verification pipeline
-    verification_pipeline = VerificationPipeline(workdir=str(project_path))
-
-    # Skill components
-    mistake_capture = MistakeCapture()
-    skill_author = SkillAuthor()
-    skill_loader = SkillLoader(project_path=str(project_path))
-
-    # Hook manager
-    hook_mgr = HookManager()
-
-    # Create RalphLoop
-    def agent_executor(task: dict, phase: RalphState) -> dict:
-        """Default agent executor — delegates to appropriate agent."""
-        result = {"success": True, "error": None, "result": {}}
-
-        if phase == RalphState.PLAN:
-            spec_agent = SpecifierAgent()
-            res = spec_agent.execute(task)
-            result["success"] = res.success
-            result["result"] = {"spec": res.output}
-
-        elif phase == RalphState.ACT:
-            impl_agent = ImplementerAgent()
-            res = impl_agent.execute(task)
-            result["success"] = res.success
-            result["result"] = {"files": []}
-
-        elif phase == RalphState.VERIFY:
-            pipeline = VerificationPipeline(workdir=str(project_path))
-            res = pipeline.run(task.get("files", []))
-            result["success"] = res.get("passed", True)
-            result["result"] = res
-
-        elif phase == RalphState.REFLECT:
-            mistake_capture.capture(task, result)
-            result["result"] = {"learned": True}
-
-        return result
-
-    # Escalation handler
-    def on_escalation(ctx: dict) -> EscalationOption:
-        print(f"\n{'='*60}")
-        print(f"ESCALATION: {ctx.get('error_log', ['Unknown error'])[-1]}")
-        print(f"Retry count: {ctx.get('retry_count', 0)}")
-        print(f"{'='*60}")
-        print("Options: (1) FORCE_MERGE  (2) REWRITE  (3) ABANDON  (4) DECOMPOSE")
-        choice = input("Select option [1-4]: ").strip()
-        options = {
-            "1": EscalationOption.FORCE_MERGE,
-            "2": EscalationOption.REWRITE,
-            "3": EscalationOption.ABANDON,
-            "4": EscalationOption.DECOMPOSE,
-        }
-        return options.get(choice, EscalationOption.ABANDON)
-
-    # Warning handler
-    def on_warning(tier: ContextTier, msg: str) -> None:
-        _print(f"WARNING [{tier.name}]: {msg}", "yellow")
-
-    # State change handler
-    def on_state_change(old: RalphState, new: RalphState) -> None:
-        _print(f"  {old.name} → {new.name}", "blue")
-
-    ralf = RalphLoop(
-        task_queue=tasks,
-        context_monitor=context_monitor_fn,
-        checkpoint_dir=project_path / ".nexus" / "checkpoints",
-        on_escalation=on_escalation,
-        on_warning=on_warning,
-        on_state_change=on_state_change,
-        agent_executor=agent_executor,
-    )
-
-    # Run
-    if args.tui:
-        # TUI mode
-        tui = NexusTUI(
-            task_queue=tasks,
-            context_monitor=context_monitor_fn,
-            ralphloop=ralf,
-        )
-        _print("Launching TUI mode... (Ctrl+C to exit)", "blue")
-        try:
-            tui.run()
-        except KeyboardInterrupt:
-            print("\nShutting down TUI...")
-        result = {"success": tui.state.is_running, "final_state": ralf.state}
-    else:
-        # CLI mode
-        _print(f"Running RalphLoop with {len(tasks)} task(s)...", "blue")
-        result = ralf.run()
-
-    # Session save
+    # Load CLAUDE.md system prompt
+    system_prompt = ""
     try:
-        sm = SessionManager(project_path=str(project_path))
-        session_id = sm.create(
-            description=args.task or "Nexus run",
-            tags=["nexus-run"],
-            initial_task_queue=tasks,
-        )
-        sm.save(session_id, ralf)
-        _print(f"Session saved: {session_id}", "green")
+        claude_md = load_claude_md(str(project_path))
+        if claude_md:
+            system_prompt = build_llm_system_prompt(str(project_path))
     except Exception as e:
-        _print(f"Session save failed: {e}", "yellow")
+        print(f"[WARN] Could not load CLAUDE.md: {e}", file=sys.stderr)
 
-    # Report
-    if result.get("success"):
-        _print(f"\n✓ RalphLoop completed successfully", "green")
-        _print(f"  Final state: {result.get('final_state')}", "green")
-    else:
-        _print(f"\n✗ RalphLoop ended with state: {result.get('final_state')}", "red")
+    # Execute
+    executor = RalphLoopExecutor(
+        project_path=str(project_path),
+        tdd_enabled=args.tdd,
+        system_prompt=system_prompt,
+        streaming=args.stream,
+    )
 
+    result = executor.execute_task(args.task)
+
+    print(f"\nResult: {json.dumps(result, indent=2, default=str)}")
     return 0 if result.get("success") else 1
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Session command
-# ═══════════════════════════════════════════════════════════════════════════════
+def cmd_tui(args: argparse.Namespace) -> int:
+    """Launch interactive TUI."""
+    try:
+        from tui.app import NexusTUIApp
+        app = NexusTUIApp(workdir=args.workdir or os.getcwd())
+        app.run()
+    except ImportError as e:
+        print(f"TUI not available: {e}")
+        print("Run in CLI mode: nexus run --task '...'")
+        return 1
+    return 0
+
 
 def cmd_session(args: argparse.Namespace) -> int:
-    """Manage Nexus sessions."""
+    """Session management."""
+    from session import SessionManager, SessionStore
     store = SessionStore()
-    mgr = SessionManager(store=store)
-
-    if args.subcmd == "list":
-        sessions = mgr.list(limit=args.limit)
+    if args.session_cmd == "list":
+        sessions = store.list_sessions()
         if not sessions:
-            _print("No sessions found.", "yellow")
+            print("No sessions found.")
             return 0
-        print(f"{'ID':<10} {'STATUS':<12} {'TASKS':<8} {'UPDATED':<25} {'DESCRIPTION'}")
-        print("-" * 80)
         for s in sessions:
-            status_color = {"active": "green", "completed": "blue",
-                            "failed": "red", "paused": "yellow"}.get(s.status.value, "")
-            print(f"{s.session_id:<10} {_colored(s.status.value, status_color):<12} "
-                  f"{s.tasks_completed}/{s.task_count:<6} {s.updated_at:<25} {s.description}")
-        print(f"\nTotal: {len(sessions)} session(s)")
-        stats = mgr.get_stats()
-        print(f"Stats: {stats['active']} active, {stats['completed']} completed, "
-              f"{stats['failed']} failed, avg {stats['avg_tasks']:.1f} tasks")
-
-    elif args.subcmd == "resume":
-        data = mgr.load(args.id)
+            print(f"{s.get('session_id', '?')[:8]} | {s.get('created_at', '?')} | {s.get('status', '?')}")
+        return 0
+    elif args.session_cmd == "resume":
+        manager = SessionManager()
+        data = manager.load(args.session_id)
         if data is None:
-            _print(f"Session {args.id} not found", "red")
+            print(f"Session {args.session_id} not found.")
             return 1
-        _print(f"Restoring session {args.id}...", "blue")
-        _print(f"  Description: {data.metadata.description}")
-        _print(f"  State: {data.ralphloop.state} @ task {data.ralphloop.task_index}")
-        _print(f"  Tasks: {data.metadata.tasks_completed}/{data.metadata.task_count}")
-        _print(f"  Context: {data.context_usage_at_checkpoint:.1f}%")
-        _print("Use 'nexus run' to continue — session will be auto-resumed", "yellow")
-
-    elif args.subcmd == "delete":
-        if mgr.delete(args.id):
-            _print(f"Session {args.id} deleted", "green")
-        else:
-            _print(f"Session {args.id} not found", "red")
-            return 1
-
+        print(f"Restored session {args.session_id}")
+        return 0
     return 0
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# MCP command
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def cmd_mcp(args: argparse.Namespace) -> int:
-    """Manage MCP servers."""
-    from mcp import MCPPresets, MCPConfigManager
+    """MCP server management."""
+    if args.mcp_cmd == "list":
+        try:
+            from mcp import list_servers
+            servers = list_servers()
+            for s in servers:
+                print(f"{s['name']}: {s['command']}")
+        except ImportError:
+            print("MCP system not fully wired.")
+        return 0
+    elif args.mcp_cmd == "presets":
+        print("Available presets: github, slack, postgres, filesystem")
+        return 0
+    return 0
 
-    mgr = MCPConfigManager()
-    _print("MCP Server Management", "blue")
 
-    if args.subcmd == "list":
-        servers = mgr.list_servers()
-        if not servers:
-            _print("No MCP servers configured. Use 'nexus mcp add' to add one.", "yellow")
-        else:
-            print(f"{'NAME':<20} {'COMMAND':<30} {'STATUS'}")
-            print("-" * 70)
-            for name, cfg in servers.items():
-                print(f"{name:<20} {str(cfg.get('command', ''))[:30]:<30} "
-                      f"{_colored('configured', 'green')}")
+def cmd_skills(args: argparse.Namespace) -> int:
+    """Skills management."""
+    if args.skills_cmd == "list":
+        print("Skills system: use 'nexus skills list'")
+        return 0
+    return 0
 
-    elif args.subcmd == "presets":
-        print("Available MCP Presets:")
-        for name in MCPPresets.list_presets():
-            print(f"  - {name}")
 
-    elif args.subcmd == "add":
-        if args.preset:
-            preset = MCPPresets.create(args.preset)
-            mgr.add_server(args.name or args.preset, preset.config)
-            _print(f"Added MCP server '{args.name or args.preset}' from preset", "green")
-        else:
-            _print("Specify --preset (github, slack, postgresql) or provide config", "yellow")
-
-    elif args.subcmd == "remove":
-        mgr.remove_server(args.name)
-        _print(f"Removed MCP server '{args.name}'", "green")
-
+def cmd_cost(args: argparse.Namespace) -> int:
+    """Cost tracking report (Phase 2 feature)."""
+    print("Cost tracking — see ARCHITECTURE_v5.md Phase 2")
     return 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TUI command
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def cmd_tui(args: argparse.Namespace) -> int:
-    """Launch the interactive TUI."""
-    project_path = Path(args.project or Path.cwd()).resolve()
-    _print(f"Launching Nexus TUI on: {project_path}", "blue")
-
-    tasks = [{"description": "Interactive task", "type": "generic"}]
-    if args.tasks_file:
-        tasks = json.loads(Path(args.tasks_file).read_text())
-
-    context_monitor_fn = lambda: 25.0
-    tui = NexusTUI(
-        task_queue=tasks,
-        context_monitor=context_monitor_fn,
-        ralphloop=None,
-    )
-    try:
-        tui.run()
-    except KeyboardInterrupt:
-        print("\nTUI exited.")
-    return 0
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Worktree command
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def cmd_worktree(args: argparse.Namespace) -> int:
-    """Manage git worktrees."""
-    wtm = WorktreeManager(repo_path=args.repo or Path.cwd())
-
-    if args.subcmd == "list":
-        trees = wtm.list()
-        if not trees:
-            _print("No worktrees found.", "yellow")
-        else:
-            print(f"{'BRANCH':<25} {'PATH':<40} {'STATUS'}")
-            print("-" * 80)
-            for tree in trees:
-                print(f"{tree.get('branch', ''):<25} "
-                      f"{tree.get('path', ''):<40} "
-                      f"{tree.get('status', 'ok')}")
-
-    elif args.subcmd == "create":
-        branch = args.branch
-        path = args.path or f"../{branch}"
-        result = wtm.create(path, branch)
-        if result.get("success"):
-            _print(f"Worktree created: {branch} at {path}", "green")
-        else:
-            _print(f"Failed: {result.get('error')}", "red")
-            return 1
-
-    elif args.subcmd == "remove":
-        result = wtm.remove(args.path, force=args.force)
-        if result.get("success"):
-            _print(f"Worktree removed: {args.path}", "green")
-        else:
-            _print(f"Failed: {result.get('error')}", "red")
-            return 1
-
-    return 0
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Hooks command
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def cmd_hooks(args: argparse.Namespace) -> int:
-    """Manage hook scripts."""
-    mgr = HookManager()
-
-    if args.subcmd == "list":
-        hooks = mgr.list_hooks()
-        if not hooks:
-            _print("No hooks registered.", "yellow")
-        else:
-            print(f"{'EVENT':<25} {'SCRIPT':<40}")
-            print("-" * 70)
-            for event, scripts in hooks.items():
-                for script in scripts:
-                    print(f"{event:<25} {script:<40}")
-
-    elif args.subcmd == "add":
-        event = HookEvent(args.event) if args.event else None
-        if event is None:
-            print("Available events:")
-            for e in HookEvent:
-                print(f"  - {e.value}")
-            return 0
-        mgr.register(event, args.script)
-        _print(f"Registered hook: {event.value} → {args.script}", "green")
-
-    return 0
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Main CLI
+# Main Entry Point
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        prog="nexus",
-        description="Nexus — Next-Generation Autonomous Coding Agent",
+        description="Nexus — RalphLoop Coding Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version="Nexus 0.2.0")
-
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # ── run ──────────────────────────────────────────────────────────────────
-    p_run = subparsers.add_parser("run", help="Run RalphLoop with task queue")
-    p_run.add_argument("-t", "--task", help="Task description (or use --tasks-file)")
-    p_run.add_argument("-f", "--tasks-file", help="JSON file with task queue")
-    p_run.add_argument("-p", "--project", help="Project root path")
-    p_run.add_argument("--tui", action="store_true", help="Launch TUI mode")
-    p_run.add_argument("--max-context", type=int, help="Max context tokens")
+    # nexus run
+    p_run = subparsers.add_parser("run", help="Run a task through RalphLoop")
+    p_run.add_argument("--task", "-t", required=True, help="Task description")
+    p_run.add_argument("--workdir", "-C", help="Working directory")
+    p_run.add_argument("--tdd/--no-tdd", dest="tdd", default=True, help="Enable TDD enforcement")
+    p_run.add_argument("--stream/--no-stream", dest="stream", default=False, help="Enable streaming token output")
     p_run.set_defaults(func=cmd_run)
 
-    # ── session ───────────────────────────────────────────────────────────────
-    p_sess = subparsers.add_parser("session", help="Session management")
-    sess_sub = p_sess.add_subparsers(dest="subcmd", required=True)
-    sess_list = sess_sub.add_parser("list", help="List sessions")
-    sess_list.add_argument("--limit", type=int, default=20)
-    sess_list.set_defaults(func=cmd_session)
-    sess_resume = sess_sub.add_parser("resume", help="Resume a session")
-    sess_resume.add_argument("id", help="Session ID")
-    sess_resume.set_defaults(func=cmd_session)
-    sess_del = sess_sub.add_parser("delete", help="Delete a session")
-    sess_del.add_argument("id", help="Session ID")
-    sess_del.set_defaults(func=cmd_session)
-
-    # ── mcp ──────────────────────────────────────────────────────────────────
-    p_mcp = subparsers.add_parser("mcp", help="MCP server management")
-    mcp_sub = p_mcp.add_subparsers(dest="subcmd", required=True)
-    mcp_list = mcp_sub.add_parser("list", help="List configured servers")
-    mcp_list.set_defaults(func=cmd_mcp)
-    mcp_presets = mcp_sub.add_parser("presets", help="List available presets")
-    mcp_presets.set_defaults(func=cmd_mcp)
-    mcp_add = mcp_sub.add_parser("add", help="Add an MCP server")
-    mcp_add.add_argument("name", nargs="?", help="Server name")
-    mcp_add.add_argument("--preset", choices=["github", "slack", "postgresql"],
-                        help="Preset to add")
-    mcp_add.set_defaults(func=cmd_mcp)
-    mcp_remove = mcp_sub.add_parser("remove", help="Remove an MCP server")
-    mcp_remove.add_argument("name", help="Server name")
-    mcp_remove.set_defaults(func=cmd_mcp)
-
-    # ── tui ──────────────────────────────────────────────────────────────────
+    # nexus tui
     p_tui = subparsers.add_parser("tui", help="Launch interactive TUI")
-    p_tui.add_argument("-p", "--project", help="Project root path")
-    p_tui.add_argument("-f", "--tasks-file", help="JSON file with task queue")
+    p_tui.add_argument("--workdir", "-C", help="Working directory")
     p_tui.set_defaults(func=cmd_tui)
 
-    # ── worktree ──────────────────────────────────────────────────────────────
-    p_wt = subparsers.add_parser("worktree", help="Git worktree management")
-    wt_sub = p_wt.add_subparsers(dest="subcmd", required=True)
-    wt_list = wt_sub.add_parser("list", help="List worktrees")
-    wt_list.add_argument("--repo", help="Git repository path")
-    wt_list.set_defaults(func=cmd_worktree)
-    wt_create = wt_sub.add_parser("create", help="Create a worktree")
-    wt_create.add_argument("branch", help="Branch name")
-    wt_create.add_argument("--path", help="Worktree path")
-    wt_create.add_argument("--repo", help="Git repository path")
-    wt_create.set_defaults(func=cmd_worktree)
-    wt_remove = wt_sub.add_parser("remove", help="Remove a worktree")
-    wt_remove.add_argument("path", help="Worktree path")
-    wt_remove.add_argument("--force", action="store_true")
-    wt_remove.add_argument("--repo", help="Git repository path")
-    wt_remove.set_defaults(func=cmd_worktree)
+    # nexus session
+    p_session = subparsers.add_parser("session", help="Session management")
+    p_session.add_argument("session_cmd", choices=["list", "resume", "save"])
+    p_session.add_argument("session_id", nargs="?", help="Session ID")
+    p_session.set_defaults(func=cmd_session)
 
-    # ── hooks ─────────────────────────────────────────────────────────────────
-    p_hk = subparsers.add_parser("hooks", help="Hook management")
-    hk_sub = p_hk.add_subparsers(dest="subcmd", required=True)
-    hk_list = hk_sub.add_parser("list", help="List registered hooks")
-    hk_list.set_defaults(func=cmd_hooks)
-    hk_add = hk_sub.add_parser("add", help="Register a hook script")
-    hk_add.add_argument("script", help="Path to hook script")
-    hk_add.add_argument("--event", help="Event type (e.g., pre-tool-use)")
-    hk_add.set_defaults(func=cmd_hooks)
+    # nexus mcp
+    p_mcp = subparsers.add_parser("mcp", help="MCP server management")
+    p_mcp.add_argument("mcp_cmd", choices=["list", "add", "presets"])
+    p_mcp.add_argument("mcp_args", nargs="*")
+    p_mcp.set_defaults(func=cmd_mcp)
 
-    # ── Parse & dispatch ──────────────────────────────────────────────────────
+    # nexus skills
+    p_skills = subparsers.add_parser("skills", help="Skills management")
+    p_skills.add_argument("skills_cmd", choices=["list", "add", "remove"])
+    p_skills.add_argument("skill_name", nargs="?", help="Skill name")
+    p_skills.set_defaults(func=cmd_skills)
+
+    # nexus cost
+    subparsers.add_parser("cost", help="Cost tracking report").set_defaults(func=cmd_cost)
+
     args = parser.parse_args()
+
+    # Legacy: nexus --task "foo"
+    if hasattr(args, "legacy_task") and args.legacy_task:
+        args.task = args.legacy_task
+        args.workdir = getattr(args, "legacy_workdir", None)
+        args.tdd = getattr(args, "legacy_tdd", True)
+        return cmd_run(args)
+
+    if not hasattr(args, "func"):
+        parser.print_help()
+        return 1
+
     return args.func(args)
 
 

@@ -142,10 +142,12 @@ class SubagentIntegration:
         self,
         workdir: Path | str | None = None,
         llm_client: Any = None,
+        model_router: Any = None,
         model_preference: str = "auto",
     ):
         self.workdir = Path(workdir) if workdir else Path.cwd()
         self.llm_client = llm_client
+        self.model_router = model_router
         self.model_preference = model_preference
         self._project_ctx = ProjectContext(self.workdir)
     
@@ -182,43 +184,88 @@ class SubagentIntegration:
         
         # ── Parallel execution: Implementer + Reviewer ──
         parallel_results: list[SubagentResult] = []
-        
-        # TODO: Actually launch via delegate_task when available
-        # For now, implement the orchestration logic
-        # 
-        # Future (with delegate_task):
-        # impl_future = delegate_task(
-        #     goal=self._build_implementer_goal(task, spec_md, constraints),
-        #     context=system_prompt,
-        #     tasks=[{
-        #         "goal": f"Implement: {task}",
-        #         "context": system_prompt,
-        #         "toolsets": ["terminal", "file"],
-        #         "role": "implementer",
-        #     }]
-        # )
-        #
-        # review_future = delegate_task(
-        #     goal=f"Review code for: {task}",
-        #     context=system_prompt,
-        #     tasks=[{
-        #         "goal": f"Code review: {task}",
-        #         "context": system_prompt,
-        #         "toolsets": ["terminal", "file"],
-        #         "role": "reviewer",
-        #     }]
-        # )
-        
-        # ── Fallback: sequential (when delegate_task not configured) ──
-        # This path is for development/testing before subagent system is live
-        decisions.append("SEQUENTIAL_MODE: delegate_task not configured, using sequential")
-        
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def run_implementer() -> SubagentResult:
+            start = time.time()
+            impl_def = get_subagent("implementer")
+            if impl_def is None:
+                return SubagentResult(task_id=task_id, role="implementer", status="error",
+                                     output="ImplementerAgent not found", duration_seconds=time.time()-start)
+            # Run via run_agent_loop
+            try:
+                impl_context = ImplementationContext(task=task, messages=[], tool_results=[], test_results=[], error_log=[])
+                from .agent_loop import run_agent_loop, AgentLoopConfig
+                impl_config = AgentLoopConfig(max_turns=max_turns)
+                result = run_agent_loop(
+                    task=self._build_implementer_goal(task, spec_md, constraints),
+                    llm_client=self._get_llm_client(),
+                    context=impl_context,
+                    config=impl_config,
+                    workdir=self.project_root,
+                    tools=self._get_tools(),
+                )
+                return SubagentResult(
+                    task_id=task_id, role="implementer", status="complete" if result.complete else "error",
+                    tool_calls=result.tool_calls, turns=result.turns,
+                    output=result.final_content, summary=result.final_content[:200],
+                    duration_seconds=time.time()-start,
+                )
+            except Exception as e:
+                return SubagentResult(task_id=task_id, role="implementer", status="error",
+                                     output=str(e), duration_seconds=time.time()-start)
+
+        def run_reviewer() -> SubagentResult:
+            start = time.time()
+            rev_def = get_subagent("reviewer")
+            if rev_def is None:
+                return SubagentResult(task_id=task_id, role="reviewer", status="error",
+                                     output="ReviewerAgent not found", duration_seconds=time.time()-start)
+            try:
+                rev_context = ImplementationContext(task=task, messages=[], tool_results=[], test_results=[], error_log=[])
+                from .agent_loop import run_agent_loop, AgentLoopConfig
+                rev_config = AgentLoopConfig(max_turns=10)
+                result = run_agent_loop(
+                    task=self._build_reviewer_goal(task, spec_md),
+                    llm_client=self._get_llm_client(),
+                    context=rev_context,
+                    config=rev_config,
+                    workdir=self.project_root,
+                    tools=self._get_tools(),
+                )
+                return SubagentResult(
+                    task_id=task_id, role="reviewer", status="complete" if result.complete else "error",
+                    tool_calls=result.tool_calls, turns=result.turns,
+                    output=result.final_content, summary=result.final_content[:200],
+                    duration_seconds=time.time()-start,
+                )
+            except Exception as e:
+                return SubagentResult(task_id=task_id, role="reviewer", status="error",
+                                     output=str(e), duration_seconds=time.time()-start)
+
+        # Execute implementer and reviewer in parallel
+        decisions.append("PARALLEL_MODE: Implementer + Reviewer running concurrently")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            impl_future = pool.submit(run_implementer)
+            rev_future = pool.submit(run_reviewer)
+            for completed in as_completed([impl_future, rev_future]):
+                result = completed.result()
+                parallel_results.append(result)
+                decisions.append(f"{result.role.upper()}: {result.status} ({result.duration_seconds:.1f}s)")
+
+        impl_result = next((r for r in parallel_results if r.role == "implementer"), None)
+        rev_result = next((r for r in parallel_results if r.role == "reviewer"), None)
+
+        # Aggregate results
+        overall = "success" if (impl_result and impl_result.is_success()) else "partial"
         return OrchestratedResult(
             task_id=task_id,
-            overall_status="partial",
+            primary=impl_result,
+            parallel_results=[rev_result] if rev_result else [],
+            overall_status=overall,
             decisions=decisions,
             total_duration_seconds=time.time() - start_time,
-            summary=f"SubagentIntegration.run_implementer_with_review: delegate_task integration pending. Task: {task[:100]}",
+            summary=f"Implementer: {impl_result.status if impl_result else 'N/A'}, Reviewer: {rev_result.status if rev_result else 'N/A'}",
         )
     
     def run_specifier(self, raw_requirements: str) -> SubagentResult:
@@ -386,6 +433,88 @@ Your job is to help implement code. Be precise, follow TDD, and use tools wisely
         
         return "\n".join(parts)
     
+    @property
+    def project_root(self) -> Path:
+        """Lazily detect project root using find_project_root."""
+        return find_project_root(self.workdir) or self.workdir
+    
+    def _get_llm_client(self, task_type: str = "code") -> Any:
+        """Get or create LLM client for subagent execution.
+        
+        Uses ModelRouter to select the optimal model based on task_type,
+        falling back to a default client if no router is configured.
+        
+        Task types: "code" | "analysis" | "reasoning" | "fast"
+        """
+        # Priority 1: use the already-configured client (RalphLoop's client with MiniMax)
+        if self.llm_client:
+            return self.llm_client
+        
+        # Priority 2: use the model_router if available
+        if self.model_router:
+            try:
+                from ..llm.model_router import TaskType
+                # Map subagent task types to ModelRouter TaskType
+                task_type_map = {
+                    "code": TaskType.CODE,
+                    "analysis": TaskType.REASONING,
+                    "reasoning": TaskType.REASONING,
+                    "fast": TaskType.FAST,
+                }
+                nexus_tt = task_type_map.get(task_type, TaskType.CODE)
+                model_info = self.model_router.select_model(nexus_tt)
+                # Get API key for this provider
+                api_key = self.model_router.api_keys.get(model_info.provider, "")
+                base_url = self.model_router.base_urls.get(model_info.provider, "")
+                from ..llm.client import LLMClient
+                return LLMClient(
+                    provider=model_info.provider,
+                    model=model_info.model,
+                    api_key=api_key,
+                    base_url=base_url,
+                )
+            except Exception:
+                pass
+        
+        # Priority 3: fallback — detect credentials and create client
+        import os, json
+        from pathlib import Path
+        settings_path = Path.home() / ".claude" / "settings.json"
+        settings_env = {}
+        if settings_path.exists():
+            try:
+                settings_env = json.loads(settings_path.read_text()).get("env", {})
+            except Exception:
+                pass
+        
+        api_key = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY", "") or settings_env.get("ANTHROPIC_AUTH_TOKEN", "")
+        base_url = os.environ.get("ANTHROPIC_BASE_URL", "") or settings_env.get("ANTHROPIC_BASE_URL", "")
+        
+        from ..llm.client import LLMClient, Provider
+        return LLMClient(provider=Provider.ANTHROPIC, model="claude-sonnet-4-20250514", api_key=api_key, base_url=base_url)
+
+    def _get_tools(self) -> list[dict]:
+        """Get tool definitions for subagent execution."""
+        from .agent_loop import TOOL_DEFINITIONS
+        return TOOL_DEFINITIONS
+
+    def _build_reviewer_goal(self, task: str, spec_md: str | None) -> str:
+        """Build the goal for ReviewerAgent."""
+        parts = [f"Review the implementation for this task:\n\n{task}\n"]
+        if spec_md:
+            parts.append(f"\n\nSPEC.md to verify against:\n{spec_md}")
+        parts.append("""
+Review the code quality:
+- Correctness: Does it match the spec?
+- Security: Any vulnerabilities?
+- Performance: Any obvious issues?
+- Tests: Are edge cases covered?
+
+Use tools to read files and inspect code.
+Report findings concisely.
+""")
+        return "".join(parts)
+
     def _build_implementer_goal(
         self,
         task: str,

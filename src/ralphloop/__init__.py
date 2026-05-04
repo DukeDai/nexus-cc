@@ -79,6 +79,7 @@ from .subagent_integration import (
     orchestrate_with_subagents,  # High-level entry point
 )
 
+
 __all__ = [
     # States
     "RalphState",
@@ -125,6 +126,9 @@ __all__ = [
     "SubagentResult",
     "OrchestratedResult",
     "orchestrate_with_subagents",
+    # Executor
+    "RalphLoopExecutor",
+    "ExecutorResult",
 ]
 
 __version__ = "0.1.0"

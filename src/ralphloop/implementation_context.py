@@ -55,6 +55,8 @@ class ImplementationContext:
     checkpoint_info: Optional[Checkpoint] = None
     context_window: int = 100000
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # Self-Evolution: learn from errors and recover
+    _evolution_engine: Optional[Any] = field(default=None, repr=False)
 
     def add_message(self, role: str, content: str) -> None:
         """Add a message to the conversation history.

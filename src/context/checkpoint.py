@@ -1,7 +1,9 @@
 """Checkpoint system for saving and restoring agent state."""
 
 import json
+import sqlite3
 import time
+import uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Optional
@@ -147,3 +149,155 @@ class Checkpoint:
         file_path = self._checkpoint_dir / f"{checkpoint_id}.json"
         if file_path.exists():
             file_path.unlink()
+
+
+class CheckpointManager:
+    """SQLite-based checkpoint manager for persistent state storage."""
+
+    def __init__(self, db_path: Path | str) -> None:
+        """
+        Initialize CheckpointManager with SQLite database.
+
+        Args:
+            db_path: Path to SQLite database file.
+        """
+        self._db_path = Path(db_path)
+        self._conn: sqlite3.Connection | None = None
+        self._init_db()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Get database connection, creating if needed."""
+        if self._conn is None:
+            self._conn = sqlite3.connect(str(self._db_path))
+            self._conn.row_factory = sqlite3.Row
+        return self._conn
+
+    def _init_db(self) -> None:
+        """Initialize database schema."""
+        conn = self._get_conn()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                state TEXT NOT NULL,
+                task_index INTEGER NOT NULL,
+                retry_count INTEGER NOT NULL,
+                context_usage REAL NOT NULL,
+                error_log TEXT NOT NULL,
+                task_queue TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+    def save_checkpoint(
+        self,
+        state: str,
+        task_index: int,
+        retry_count: int,
+        context_usage: float,
+        task_queue: list[dict],
+        error_log: list[dict],
+    ) -> str:
+        """
+        Save a checkpoint to the database.
+
+        Args:
+            state: Current state (e.g., "PLAN", "EXEC").
+            task_index: Current task index.
+            retry_count: Number of retries.
+            context_usage: Context token usage percentage.
+            task_queue: List of task dictionaries.
+            error_log: List of error dictionaries.
+
+        Returns:
+            The checkpoint ID (UUID string).
+        """
+        checkpoint_id = str(uuid.uuid4())
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT INTO checkpoints 
+            (id, timestamp, state, task_index, retry_count, context_usage, error_log, task_queue)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                checkpoint_id,
+                timestamp,
+                state,
+                task_index,
+                retry_count,
+                context_usage,
+                json.dumps(error_log),
+                json.dumps(task_queue),
+            ),
+        )
+        conn.commit()
+        return checkpoint_id
+
+    def load_checkpoint(self, checkpoint_id: str) -> dict | None:
+        """
+        Load a checkpoint by ID.
+
+        Args:
+            checkpoint_id: The checkpoint ID to load.
+
+        Returns:
+            Dictionary with checkpoint data or None if not found.
+        """
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "SELECT * FROM checkpoints WHERE id = ?", (checkpoint_id,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "timestamp": row["timestamp"],
+            "state": row["state"],
+            "task_index": row["task_index"],
+            "retry_count": row["retry_count"],
+            "context_usage": row["context_usage"],
+            "error_log": json.loads(row["error_log"]),
+            "task_queue": json.loads(row["task_queue"]),
+        }
+
+    def list_checkpoints(self) -> list[dict]:
+        """
+        List all checkpoints ordered by timestamp descending.
+
+        Returns:
+            List of checkpoint dictionaries.
+        """
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "SELECT * FROM checkpoints ORDER BY timestamp DESC"
+        )
+        rows = cursor.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "timestamp": row["timestamp"],
+                "state": row["state"],
+                "task_index": row["task_index"],
+                "retry_count": row["retry_count"],
+                "context_usage": row["context_usage"],
+                "error_log": json.loads(row["error_log"]),
+                "task_queue": json.loads(row["task_queue"]),
+            }
+            for row in rows
+        ]
+
+    def delete_checkpoint(self, checkpoint_id: str) -> None:
+        """
+        Delete a checkpoint by ID.
+
+        Args:
+            checkpoint_id: The checkpoint ID to delete.
+        """
+        conn = self._get_conn()
+        conn.execute("DELETE FROM checkpoints WHERE id = ?", (checkpoint_id,))
+        conn.commit()

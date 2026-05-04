@@ -152,35 +152,65 @@ class ModelRouter:
             cost_per_1k_output=0.0,
             speed_factor=2.5,
         ),
+        # MiniMax models (via minimax-cn provider)
+        "MiniMax-M2.7": ModelConfig(
+            name="MiniMax-M2.7",
+            provider=Provider.MINIMAX_CN,
+            context_window=1000000,  # Large context
+            supports_tools=True,
+            supports_vision=False,
+            cost_per_1k_input=0.0,   # Quota-based pricing
+            cost_per_1k_output=0.0,
+            speed_factor=2.0,
+        ),
     }
     
     # Task to preferred model mapping
     TASK_PREFERENCES = {
-        TaskType.FAST: ["gpt-3.5-turbo", "claude-3-haiku", "gpt-4o-mini", "llama3"],
-        TaskType.REASONING: ["claude-3-5-sonnet-20241022", "gpt-4o", "claude-3-opus"],
-        TaskType.CODE: ["claude-3-5-sonnet-20241022", "gpt-4o", "codellama"],
-        TaskType.CREATIVE: ["claude-3-5-sonnet-20241022", "gpt-4o", "llama3"],
-        TaskType.ANALYSIS: ["claude-3-5-sonnet-20241022", "gpt-4o", "claude-3-opus"],
-        TaskType.TOOL_USE: ["claude-3-5-sonnet-20241022", "gpt-4o", "gpt-4o-mini"],
+        TaskType.FAST: ["gpt-3.5-turbo", "claude-3-haiku", "gpt-4o-mini", "llama3", "MiniMax-M2.7"],
+        TaskType.REASONING: ["claude-3-5-sonnet-20241022", "gpt-4o", "claude-3-opus", "MiniMax-M2.7"],
+        TaskType.CODE: ["claude-3-5-sonnet-20241022", "gpt-4o", "MiniMax-M2.7", "codellama"],
+        TaskType.CREATIVE: ["claude-3-5-sonnet-20241022", "gpt-4o", "llama3", "MiniMax-M2.7"],
+        TaskType.ANALYSIS: ["claude-3-5-sonnet-20241022", "gpt-4o", "claude-3-opus", "MiniMax-M2.7"],
+        TaskType.TOOL_USE: ["claude-3-5-sonnet-20241022", "gpt-4o", "MiniMax-M2.7", "gpt-4o-mini"],
         TaskType.VISION: ["claude-3-5-sonnet-20241022", "gpt-4o", "claude-3-opus"],
     }
     
     def __init__(
         self,
-        api_keys: Optional[dict[Provider, str]] = None,
-        base_urls: Optional[dict[Provider, str]] = None,
-        custom_models: Optional[dict[str, ModelConfig]] = None,
+        api_keys: dict[Provider, str] | None = None,
+        base_urls: dict[Provider, str] | None = None,
+        preferred_provider: Provider | None = None,
+        custom_models: dict[str, ModelConfig] | None = None,
     ):
         """
-        Initialize the model router.
-        
+        Initialize the ModelRouter.
+
         Args:
-            api_keys: Dict mapping provider to API key
-            base_urls: Dict mapping provider to custom base URL
-            custom_models: Dict of custom model configurations
+            api_keys: Dict of {Provider: api_key}. If a provider has no key,
+                      it will be excluded from model selection.
+            base_urls: Optional dict of {Provider: base_url} overrides.
+            preferred_provider: If set, only use models from this provider
+                               (useful when only one provider's key is available).
+            custom_models: Optional dict of custom model configurations.
         """
         self.api_keys = api_keys or {}
         self.base_urls = base_urls or {}
+        self.preferred_provider = preferred_provider
+        self._clients: dict[str, LLMClient] = {}
+
+        # Set default base URLs if not provided
+        for provider in Provider:
+            if provider not in self.base_urls:
+                if provider == Provider.ANTHROPIC:
+                    self.base_urls[provider] = "https://api.anthropic.com"
+                elif provider == Provider.OPENAI:
+                    self.base_urls[provider] = "https://api.openai.com/v1"
+                elif provider == Provider.OLLAMA:
+                    self.base_urls[provider] = "http://localhost:11434"
+                elif provider == Provider.MINIMAX_CN:
+                    self.base_urls[provider] = "https://api.minimaxi.com/anthropic"
+
         self.models = self.DEFAULT_MODELS.copy()
         
         # Add any custom models
@@ -242,7 +272,22 @@ class ModelRouter:
             Name of the selected model
         """
         candidates = list(self.models.keys())
-        
+
+        # Filter: only models from providers where we have API keys
+        if self.api_keys:
+            available_providers = set(self.api_keys.keys())
+            candidates = [
+                m for m in candidates
+                if self.models[m].provider in available_providers
+            ]
+
+        # Filter: preferred provider
+        if self.preferred_provider:
+            candidates = [
+                m for m in candidates
+                if self.models[m].provider == self.preferred_provider
+            ]
+
         # Filter by requirements
         if requires_tools:
             candidates = [m for m in candidates if self.models[m].supports_tools]
@@ -263,36 +308,39 @@ class ModelRouter:
         if not candidates:
             raise ValueError("No models available matching the specified requirements")
         
-        # Sort by preference
+        # Sort candidates
         if task_type and task_type in self.TASK_PREFERENCES:
             preferences = self.TASK_PREFERENCES[task_type]
-            
-            # Sort candidates based on preference order
-            def preference_score(model: str) -> tuple[int, float]:
-                try:
-                    idx = preferences.index(model)
-                except ValueError:
-                    idx = len(preferences)
+
+            def task_score(model: str) -> tuple[int, int, float]:
+                """Score: (preference_tier, preference_rank, speed_factor).
                 
-                # Secondary sort by speed or cost
+                prefer_speed=True: sort by speed_factor DESC first (speed_tier 0 = fastest).
+                prefer_speed=False: sort by preference first.
+                """
                 config = self.models[model]
+                try:
+                    rank = preferences.index(model)
+                except ValueError:
+                    rank = len(preferences)
+
                 if prefer_speed:
-                    secondary = -config.speed_factor  # Higher speed = lower (better) score
+                    # Speed primary: tier by speed bucket, then preference rank
+                    speed_bucket = int(10 / config.speed_factor)  # higher speed = lower bucket
+                    return (speed_bucket, rank, -config.speed_factor)
                 else:
-                    secondary = config.cost_per_1k_input + config.cost_per_1k_output
-                
-                return (idx, secondary)
-            
-            candidates.sort(key=preference_score)
-        
+                    # Quality primary: preference rank, then cost
+                    cost = config.cost_per_1k_input + config.cost_per_1k_output
+                    return (rank, cost, 0)
+
+            candidates.sort(key=task_score)
         elif prefer_speed:
             candidates.sort(key=lambda m: -self.models[m].speed_factor)
         else:
-            # Default: sort by combined cost
             candidates.sort(
                 key=lambda m: self.models[m].cost_per_1k_input + self.models[m].cost_per_1k_output
             )
-        
+
         selected = candidates[0]
         logger.debug(f"Selected model {selected} for task {task_type}")
         return selected

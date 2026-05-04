@@ -191,14 +191,10 @@ def test_full_ralphloop_integration():
     """Test full RalphLoop with agent_loop."""
     print("\n=== Test: Full RalphLoop Integration ===")
     
-    # Fix path to find nexus_core.py at project root
-    project_root = Path(__file__).parent
-    sys.path.insert(0, str(project_root))
-    
-    # This imports nexus_core to test LLM integration
+    # nexus_core shim is available at project root
     try:
         import nexus_core
-        print(f"  nexus_core loaded from: {nexus_core.__file__}")
+        print(f"  nexus_core shim loaded from: {nexus_core.__file__}")
     except ImportError:
         print("  ⚠️  nexus_core.py not importable")
         print("  Skipping full integration test")

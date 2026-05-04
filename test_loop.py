@@ -17,7 +17,7 @@ import subprocess
 # Ensure we can import from src
 sys.path.insert(0, '/Users/dukedai/Dev/nexus')
 
-from nexus_core import LLMClient, ToolExecutor, TOOL_DEFINITIONS
+from nexus_core import LLMClient, ToolExecutor, TOOL_DEFINITIONS  # noqa: F401
 
 
 def run_loop():
