@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, TypedDict
 
 
 # Project markers that indicate a repository root
@@ -146,7 +146,21 @@ def detect_project_language(root: Path) -> list[str]:
     return sorted(languages)
 
 
-def get_project_context(workdir: Path | str | None = None) -> dict:
+class ProjectContextDict(TypedDict):
+    """Type for project context dictionary."""
+    root: str
+    root_found: bool
+    claude_md: str | None
+    claude_md_found: bool
+    workdir: str
+    languages: list[str]
+    git_branch: str | None
+    git_dirty: bool
+    git_ahead: int
+    git_behind: int
+
+
+def get_project_context(workdir: Path | str | None = None) -> ProjectContextDict:
     """Build comprehensive project context for LLM.
     
     Returns:
@@ -205,7 +219,7 @@ def get_project_context(workdir: Path | str | None = None) -> dict:
         except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
             pass
     
-    return context
+    return context  # type: ignore[return-value]
 
 
 def build_llm_system_prompt(

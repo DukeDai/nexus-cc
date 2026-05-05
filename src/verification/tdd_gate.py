@@ -427,7 +427,7 @@ class TDDGate:
 
             # Parse failures from output
             if not result["passed"]:
-                result["failures"] = self._parse_failures(result["output"])
+                result["failures"] = self._parse_failures(str(result["output"]))
 
         except subprocess.TimeoutExpired:
             result["output"] = "Test execution timed out after 60 seconds"

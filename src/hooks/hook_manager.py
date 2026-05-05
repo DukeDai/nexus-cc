@@ -89,7 +89,7 @@ class HookManager:
         result = manager.invoke(ctx)
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the hook manager."""
         self._hooks: dict[HookEvent, list[HookRegistration]] = {
             event: [] for event in HookEvent

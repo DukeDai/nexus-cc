@@ -253,7 +253,7 @@ class WorktreeManager:
             head = result.stdout.strip()
             if head == "HEAD":
                 return None
-            return head
+            return head  # type: ignore[no-any-return]
         except subprocess.CalledProcessError:
             return None
 

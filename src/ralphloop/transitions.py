@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Callable, Iterator, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .states import RalphState
@@ -244,8 +244,13 @@ def get_transition_table() -> list[Transition]:
 class _TransitionTableAccessor:
     """Lazy-loaded transition table accessor."""
 
-    def __iter__(self):
-        return iter(get_transition_table())
+    def __iter__(self) -> Iterator[RalphState]:
+        # Extract unique target states from transitions
+        seen: set[RalphState] = set()
+        for t in get_transition_table():
+            if t.to_state not in seen:
+                seen.add(t.to_state)
+                yield t.to_state
 
     def __len__(self) -> int:
         return len(get_transition_table())

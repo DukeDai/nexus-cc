@@ -308,8 +308,6 @@ class TestGate:
 
             output = proc.stdout + proc.stderr
             results = self._parse_test_output(output)
-            results["_exit_code"] = proc.returncode
-            results["_output"] = output
 
         except subprocess.TimeoutExpired:
             results["_TIMEOUT"] = TestResult(

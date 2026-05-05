@@ -270,7 +270,7 @@ class ClaudeMD:
                 continue
 
             for section in doc.sections:
-                if section.title in self._merged_sections:
+                if section.title in self._merged_sections and doc.source_path is not None:
                     # Append with separator
                     self._merged_sections[section.title] += (
                         f"\n\n<!-- From {doc.source_path.name} -->\n{section.content}"

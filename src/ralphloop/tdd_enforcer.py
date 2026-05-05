@@ -19,7 +19,7 @@ import subprocess
 import os
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional
+from typing import Any, Optional
 
 
 class TDDPhase(Enum):
@@ -147,7 +147,7 @@ class TDDEnforcer:
     
     def write_red(
         self,
-        llm_client,
+        llm_client: Any,
         messages: list[dict],
         test_description: str,
     ) -> str:
@@ -184,7 +184,7 @@ Write ONLY the test code, no explanations:"""
         red_messages = messages + [{"role": "user", "content": prompt}]
         
         response = llm_client.complete(red_messages)
-        test_code = response.content.strip()
+        test_code: str = response.content.strip()
         
         return test_code
     
@@ -203,7 +203,7 @@ Write ONLY the test code, no explanations:"""
     
     def write_green(
         self,
-        llm_client,
+        llm_client: Any,
         messages: list[dict],
         test_code: str,
     ) -> str:
@@ -240,7 +240,7 @@ Write ONLY the implementation code:"""
         green_messages = messages + [{"role": "user", "content": prompt}]
         
         response = llm_client.complete(green_messages)
-        impl_code = response.content.strip()
+        impl_code: str = response.content.strip()
         
         return impl_code
     
@@ -256,7 +256,7 @@ Write ONLY the implementation code:"""
     
     def refactor(
         self,
-        llm_client,
+        llm_client: Any,
         messages: list[dict],
         impl_code: str,
     ) -> str:
@@ -299,13 +299,13 @@ Write ONLY the refactored implementation code:"""
         refactor_messages = messages + [{"role": "user", "content": prompt}]
         
         response = llm_client.complete(refactor_messages)
-        refactored_code = response.content.strip()
+        refactored_code: str = response.content.strip()
         
         return refactored_code
     
     def run_cycle(
         self,
-        llm_client,
+        llm_client: Any,
         messages: list[dict],
         task: str,
     ) -> TDDCycleResult:

@@ -38,7 +38,7 @@ class BaseTool:
     description: str = ""
     input_schema: dict[str, Any] = {}
 
-    def __call__(self, **kwargs) -> ToolResult:
+    def __call__(self, **kwargs: Any) -> ToolResult:
         raise NotImplementedError
 
     def definition(self) -> dict[str, Any]:
@@ -53,7 +53,7 @@ class BaseTool:
 class ToolRegistry:
     """Registry for discovering, registering, and executing tools."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
 
     # -------------------------------------------------------------------------
@@ -108,7 +108,7 @@ class ToolRegistry:
     # Execution
     # -------------------------------------------------------------------------
 
-    def execute(self, tool_name: str, **kwargs) -> ToolResult:
+    def execute(self, tool_name: str, **kwargs: Any) -> ToolResult:
         """Execute a tool by name with the given arguments."""
         tool = self.get(tool_name)
         if tool is None:

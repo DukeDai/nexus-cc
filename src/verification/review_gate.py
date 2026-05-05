@@ -469,7 +469,7 @@ class ReviewGate:
         # Check for return statements in finally without proper handling
         if isinstance(node, ast.Try):
             for child in ast.walk(node):
-                if isinstance(child, ast.Return) and child in ast.walk(node.finalbody):
+                if isinstance(child, ast.Return) and hasattr(node, 'finalbody') and child in node.finalbody:
                     issues.append(
                         ReviewIssue(
                             rule_id="AST-005",

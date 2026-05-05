@@ -242,7 +242,7 @@ Fix applied: {fix}"""
         return skills
 
 
-def asdict(obj):
+def asdict(obj: Any) -> Any:
     """Helper to convert dataclass to dict."""
     if hasattr(obj, '__dataclass_fields__'):
         return {f: asdict(getattr(obj, f)) for f in obj.__dataclass_fields__}

@@ -70,7 +70,7 @@ class SkillLoader:
         Returns:
             List of LoadedSkill objects ordered by relevance
         """
-        loaded = []
+        loaded: list[LoadedSkill] = []
         task_lower = task_description.lower()
         context = context or {}
         
@@ -138,7 +138,7 @@ class SkillLoader:
         Returns:
             List of relevant prevention skills
         """
-        loaded = []
+        loaded: list[LoadedSkill] = []
         desc_lower = mistake_description.lower()
         
         for skill_name, metadata in self._registry.items():

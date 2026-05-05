@@ -206,6 +206,26 @@ class RalphLoopExecutor:
         result = _run_loop(act_prompt, "ACT")
         self.turns += result.turns
 
+        # ── 用户 Approval 确认 ───────────────────────────────────
+        changed_files = self.context.get_changed_files()
+        if changed_files:
+            click.echo(f"\n[APPROVAL] {len(changed_files)} file(s) changed:")
+            for f in changed_files[:10]:  # 显示前10个
+                click.echo(f"  - {f}")
+            if len(changed_files) > 10:
+                click.echo(f"  ... and {len(changed_files) - 10} more")
+            
+            approval = click.confirm("\nProceed to verification?")
+            if not approval:
+                click.echo("[ABORT] User rejected changes")
+                return {
+                    "success": False,
+                    "turns": self.turns,
+                    "final_state": "ABORT",
+                    "content": "User rejected changes during approval",
+                    "tool_count": len(self.context.tool_results),
+                }
+
         # ── ACT 后验证 ─────────────────────────────────────────────
         changed_files = self.context.get_changed_files()
         if changed_files:

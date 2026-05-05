@@ -82,7 +82,7 @@ class ApprovalWorkflow:
         with self._lock:
             self._approved = True
         self._event.set()
-        if self._pending and self._on_approve:
+        if self._pending and self._on_approve is not None:
             self._on_approve(self._pending)
 
     def reject(self) -> None:
@@ -90,7 +90,7 @@ class ApprovalWorkflow:
         with self._lock:
             self._approved = False
         self._event.set()
-        if self._pending and self._on_reject:
+        if self._pending and self._on_reject is not None:
             self._on_reject(self._pending)
 
     @property

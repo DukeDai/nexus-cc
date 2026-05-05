@@ -79,7 +79,7 @@ class AssistantMessage:
 
     def to_llm_dict(self) -> dict[str, Any]:
         """Convert to LLM API message format."""
-        msg = {"role": "assistant", "content": self.content}
+        msg: dict[str, Any] = {"role": "assistant", "content": self.content}
         if self.tool_calls:
             # Convert ToolCall objects to provider-native format
             msg["tool_calls"] = [
