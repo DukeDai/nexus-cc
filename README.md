@@ -271,9 +271,10 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 > README 吹的很多功能实际是 stub 或未集成
 
 **核心未集成**
-- [ ] `src/verification/` pipeline — 写了 tdd_gate/security_scan/review_gate/test_gate，但 **RalphLoop orchestrator 完全没用它们**，每次 ACT 直接结束
+- [x] `src/verification/` pipeline — ACT 后集成 security scan (run.py)
+- [x] ACT 后自动 pytest + mypy 验证
 - [ ] Multi-Agent 并行 — `SubagentIntegration` 有 ThreadPoolExecutor 但 line 314 写的是 `# TODO: Replace with actual delegate_task call`
-- [ ] Subagent 协作 — `subagent_registry.py` 定义了 5 种 Agent，但 orchestrator 没调用它们协同工作
+- [ ] Subagent 协作 — `subagent_registry.py` 定义了 5 种 Agent，orchestrator 未调用
 
 **功能 stub**
 - [ ] Model Router — `model_router.py` (456行) 框架在，但没有根据任务复杂度选模型的逻辑
@@ -306,7 +307,7 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 - [ ] `src/context/` (~6 errors) — Path/None 属性访问
 - [ ] `src/self_evolution/` (~4 errors) — 缺少返回类型
 
-> mypy 基线：`Found 173 errors in 43 files`（大部分是第三方库类型和 Rich Console API 严格校验）
+> mypy 基线：`Found 187 errors in 47 files`（大部分是第三方库类型和 Rich Console API 严格校验）
 
 **TUI 功能完善**
 - [ ] `undo` 命令实现
