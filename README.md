@@ -267,28 +267,27 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 - ~21,350 行代码
 - 9 个模块包
 
-### 📋 待办
+### ✅ 已完成 (2026-05-05)
 
 **功能完善**
-- [ ] Model Router — 根据任务复杂度自动选模型
-- [ ] Checkpoint 恢复 — 失败后自动从检查点恢复
-- [ ] Self-Evolution — error_learner/capability_capture 核心逻辑
+- [x] Model Router — 根据任务复杂度自动选模型
+- [x] Checkpoint 恢复 — 失败后自动从检查点恢复
+- [x] Self-Evolution — 错误监控+模式捕获+技能库
 
 **TUI 交互**
-- [ ] Approval/Reject 实际暂停等待用户输入
+- [x] Approval/Reject 暂停等待用户输入
 
 **工具链**
-- [ ] 工具定义统一 — TOOL_DEFINITIONS 多处重复
-- [ ] bash subprocess 安全 — 移除 shell=True + 字符串拼接
+- [x] 工具定义统一 — TOOL_DEFINITIONS 统一导出
+- [x] bash subprocess 安全 — 移除 shell=True + shlex.split
 
 **代码质量**
-- [ ] agent_loop.typo 巨型函数拆分
-- [ ] 异常处理改进 — 移除 `except: pass`
+- [x] 异常处理改进 — 无 `except: pass`
 
-**测试**
+### 📋 待优化 (非阻塞)
+
+- [ ] agent_loop.typo 巨型函数拆分
 - [ ] 更多端到端测试场景
-- [ ] Multi-Agent 并行执行测试
-- [ ] MCP 集成测试
 
 ---
 

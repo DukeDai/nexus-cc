@@ -99,8 +99,11 @@ class ToolExecutor:
             return f"ERROR: {type(e).__name__}: {e}"
 
     def _bash(self, command: str, timeout: int) -> str:
+        # 安全：使用 shell=False + shlex.split 避免 shell 注入
+        import shlex
+        cmd_list = shlex.split(command) if isinstance(command, str) else command
         result = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
+            cmd_list, shell=False, capture_output=True, text=True,
             timeout=timeout, cwd=str(self.workdir)
         )
         output = f"[exit {result.returncode}]\n"

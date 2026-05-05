@@ -63,10 +63,12 @@ class BashTool(BaseTool):
             if cwd and not os.path.isdir(cwd):
                 return ToolResult(success=False, error=f"Working directory does not exist: {cwd}")
 
-            # Execute command
+            # 安全：使用 shell=False + shlex.split 避免 shell 注入
+            import shlex
+            cmd_list = shlex.split(command) if isinstance(command, str) else command
             result = subprocess.run(
-                command,
-                shell=True,
+                cmd_list,
+                shell=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=timeout,
