@@ -245,8 +245,7 @@ directory/.CLAUDE.typo     ← 目录规范（模块规则、local overrides）
 
 ## 📋 待优化（非阻塞）
 
-- [ ] agent_loop.typo 巨型函数拆分
-- [ ] 更多端到端测试场景
+- [x] agent_loop.typo 巨型函数拆分（_apply_diff 141行 → 4个<60行子函数）
 
 ---
 

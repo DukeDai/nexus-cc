@@ -175,10 +175,32 @@ class ToolExecutor:
         with open(p) as f:
             original_lines = [line.rstrip('\n') for line in f.readlines()]
 
-        diff_lines = diff.split("\n")
+        hunks = self._parse_hunks(diff)
+        if not hunks:
+            return f"ERROR: No valid hunks found in diff for {p}"
 
-        # Parse all hunks
+        patched_lines = original_lines[:]
+        total_removed = 0
+        total_added = 0
+
+        for hunk in hunks:
+            result = self._apply_single_hunk(patched_lines, hunk)
+            total_removed += result["removed"]
+            total_added += result["added"]
+
+        try:
+            with open(p, "w") as f:
+                f.write("\n".join(patched_lines) + "\n")
+            return (f"OK: Applied {len(hunks)} hunks, "
+                    f"{total_removed} removed, {total_added} added to {p}")
+        except Exception as e:
+            return f"ERROR writing {p}: {e}"
+
+    def _parse_hunks(self, diff: str) -> list[dict]:
+        """Parse unified diff into structured hunks."""
+        import re
         hunks = []
+        diff_lines = diff.split("\n")
         i = 0
         while i < len(diff_lines):
             line = diff_lines[i]
@@ -214,98 +236,84 @@ class ToolExecutor:
                 })
             else:
                 i += 1
+        return hunks
 
-        if not hunks:
-            return f"ERROR: No valid hunks found in diff for {p}"
+    def _apply_single_hunk(self, patched_lines: list[str], hunk: dict) -> dict:
+        """Apply a single hunk to the line list. Returns stats dict."""
+        old_start = hunk['old_start']
+        old_count = hunk['old_count']
+        new_count = hunk['new_count']
+        hunk_content = hunk['content']
 
-        patched_lines = original_lines[:]
-        hunk_results = []
-        total_removed = 0
-        total_added = 0
+        # Classify lines
+        hunk_lines = []
+        for hl in hunk_content:
+            if hl.startswith("-"):
+                hunk_lines.append(("del", hl[1:]))
+            elif hl.startswith("+"):
+                hunk_lines.append(("add", hl[1:]))
+            else:
+                hunk_lines.append(("ctx", hl[1:] if len(hl) > 1 else ""))
 
-        for hunk_idx, hunk in enumerate(hunks):
-            old_start = hunk['old_start']
-            old_count = hunk['old_count']
-            new_count = hunk['new_count']
-            hunk_content = hunk['content']
+        edits = self._classify_hunk_edits(hunk_lines)
 
-            hunk_lines = []
-            for hl in hunk_content:
-                if hl.startswith("-"):
-                    hunk_lines.append(("del", hl[1:]))
-                elif hl.startswith("+"):
-                    hunk_lines.append(("add", hl[1:]))
+        # Rebuild hunk
+        cursor = max(0, old_start - 1)
+        rebuild = []
+        deletions = []
+        insertions = []
+        replacements = 0
+
+        for edit in edits:
+            if edit[0] == "cnt":
+                cursor += 1
+                rebuild.append(edit[1])
+            elif edit[0] == "rep":
+                cursor += 1
+                rebuild.append(edit[2])
+                replacements += 1
+            elif edit[0] == "del":
+                deletions.append((cursor, edit[1]))
+                cursor += 1
+            elif edit[0] == "ins":
+                count_before = len(rebuild)
+                rebuild.insert(count_before, edit[1])
+                insertions.append((count_before, edit[1]))
+
+        # Apply deletions in reverse order
+        for edit_pos, _ in sorted(deletions, key=lambda x: x[0], reverse=True):
+            adjusted_pos = edit_pos - sum(1 for d in deletions if d[0] < edit_pos)
+            if 0 <= adjusted_pos < len(patched_lines):
+                patched_lines.pop(adjusted_pos)
+
+        return {
+            "replacements": replacements,
+            "insertions": len(insertions),
+            "deletions": len(deletions),
+            "removed": len(deletions),
+            "added": len(insertions) + replacements
+        }
+
+    def _classify_hunk_edits(self, hunk_lines: list[tuple]) -> list:
+        """Classify edits within hunk: context, replacement, deletion, insertion."""
+        edits = []
+        j = 0
+        while j < len(hunk_lines):
+            typ, text = hunk_lines[j]
+            if typ == "ctx":
+                edits.append(("cnt", text))
+                j += 1
+            elif typ == "del":
+                if j + 1 < len(hunk_lines) and hunk_lines[j + 1][0] == "add":
+                    edits.append(("rep", text, hunk_lines[j + 1][1]))
+                    j += 2
                 else:
-                    hunk_lines.append(("ctx", hl[1:] if len(hl) > 1 else ""))
-
-            # Classify edits within hunk body
-            edits = []
-            j = 0
-            while j < len(hunk_lines):
-                typ, text = hunk_lines[j]
-                if typ == "ctx":
-                    edits.append(("cnt", text))
+                    edits.append(("del", text))
                     j += 1
-                elif typ == "del":
-                    # Check if next is add (replacement)
-                    if j + 1 < len(hunk_lines) and hunk_lines[j + 1][0] == "add":
-                        edits.append(("rep", text, hunk_lines[j + 1][1]))
-                        j += 2
-                    else:
-                        edits.append(("del", text))
-                        j += 1
-                elif typ == "add":
-                    edits.append(("ins", text))
-                    j += 1
-
-            # Rebuild hunk
-            cursor = max(0, old_start - 1)
-            rebuild = []
-            deletions = []
-            insertions = []
-            replacements = 0
-
-            for edit in edits:
-                if edit[0] == "cnt":
-                    cursor += 1
-                    rebuild.append(edit[1])
-                elif edit[0] == "rep":
-                    cursor += 1
-                    rebuild.append(edit[2])
-                    replacements += 1
-                elif edit[0] == "del":
-                    deletions.append((cursor, edit[1]))
-                    cursor += 1
-                elif edit[0] == "ins":
-                    count_before = len(rebuild)
-                    rebuild.insert(count_before, edit[1])
-                    insertions.append((count_before, edit[1]))
-
-            # Apply deletions in reverse order
-            for edit_pos, _ in sorted(deletions, key=lambda x: x[0], reverse=True):
-                adjusted_pos = edit_pos - sum(1 for d in deletions if d[0] < edit_pos)
-                if 0 <= adjusted_pos < len(patched_lines):
-                    patched_lines.pop(adjusted_pos)
-
-            hunk_results.append({
-                'idx': hunk_idx,
-                'success': True,
-                'replacements': replacements,
-                'insertions': len(insertions),
-                'deletions': len(deletions),
-            })
-            total_removed += len(deletions)
-            total_added += len(insertions) + replacements
-
-        # Write back
-        try:
-            with open(p, "w") as f:
-                f.write("\n".join(patched_lines) + "\n")
-            return (f"OK: Applied {len(hunks)} hunks, "
-                    f"{total_removed} removed, {total_added} added to {p}")
-        except Exception as e:
-            return f"ERROR writing {p}: {e}"
-
+            elif typ == "add":
+                edits.append(("ins", text))
+                j += 1
+        return edits
     def _tdd_test(self, test_path: str, impl_path: str, test_code: str, impl_code: str) -> str:
         """Write test + impl, run pytest."""
         results = []
