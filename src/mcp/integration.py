@@ -375,7 +375,7 @@ class RalphLoopMCPBridge:
             results.append({"server": server, "result": result})
 
         return {
-            "success": any(r["result"].success for r in results),
+            "success": any(bool(r["result"].success) for r in results),
             "results": results,
         }
 
@@ -403,7 +403,7 @@ class RalphLoopMCPBridge:
             results.append({"server": server, "result": result})
 
         return {
-            "success": any(r["result"].success for r in results),
+            "success": any(bool(r["result"].success) for r in results),
             "results": results,
         }
 
