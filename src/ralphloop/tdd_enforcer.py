@@ -123,6 +123,8 @@ class TDDEnforcer:
         """
         self.test_command = test_command or ["python3", "-m", "pytest"]
         self._temp_dir: Optional[str] = None
+        self.test_code: str = ""
+        self.impl_code: str = ""
     
     def start_cycle(self, task: str) -> TDDCycle:
         """Begin a new TDD cycle in RED phase.

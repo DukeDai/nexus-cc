@@ -402,8 +402,80 @@ class NexusTUI:
         self._state.messages.append("Skipped.")
 
     def _cmd_undo(self, args: list[str]) -> None:
-        """Undo last change via git."""
-        self._state.messages.append("Undo not yet implemented.")
+        """Undo last change via git.
+
+        Usage: undo [--commit] [--hard]
+        - undo (default): discard uncommitted changes
+        - undo --commit: undo last commit (keep changes staged)
+        - undo --hard: discard last commit AND all changes
+        """
+        import subprocess
+
+        # Parse args
+        mode = "discard"
+        if args:
+            if "--hard" in args:
+                mode = "hard"
+            elif "--commit" in args:
+                mode = "commit"
+
+        project = Path(self.project_path)
+        try:
+            if mode == "hard":
+                # Undo last commit AND discard all changes
+                result = subprocess.run(
+                    ["git", "reset", "--hard", "HEAD~1"],
+                    cwd=project,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    self._state.messages.append("✓ Undid last commit and discarded changes.")
+                else:
+                    self._state.messages.append(f"✗ Error: {result.stderr.strip()}")
+
+            elif mode == "commit":
+                # Undo last commit but keep changes staged
+                result = subprocess.run(
+                    ["git", "reset", "--soft", "HEAD~1"],
+                    cwd=project,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    self._state.messages.append("✓ Undid last commit (changes staged).")
+                else:
+                    self._state.messages.append(f"✗ Error: {result.stderr.strip()}")
+
+            else:
+                # Default: discard uncommitted changes
+                # Check if there are changes first
+                result = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=project,
+                    capture_output=True,
+                    text=True,
+                )
+                if not result.stdout.strip():
+                    self._state.messages.append("No uncommitted changes to undo.")
+                    return
+
+                # Discard all changes
+                result = subprocess.run(
+                    ["git", "checkout", "--", "."],
+                    cwd=project,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    self._state.messages.append("✓ Discarded uncommitted changes.")
+                else:
+                    self._state.messages.append(f"✗ Error: {result.stderr.strip()}")
+
+        except FileNotFoundError:
+            self._state.messages.append("✗ Git not found.")
+        except Exception as e:
+            self._state.messages.append(f"✗ Error: {e}")
 
     def _cmd_status(self, args: list[str]) -> None:
         """Show current status."""
@@ -825,7 +897,7 @@ class NexusTUI:
         # Build layout
         self._layout = self._build_layout()
 
-        def update_loop():
+        def update_loop() -> None:
             """Background update loop for live refresh + command polling."""
             with Live(
                 self._layout,
@@ -850,7 +922,7 @@ class NexusTUI:
                     self.console.print("", end="")  # Trigger refresh
 
         # Start RalphLoop in background thread
-        def ralphloop_thread():
+        def ralphloop_thread() -> None:
             result = self._ralphloop.run()
             self._ralphloop_result = result
             self._state.is_running = False
@@ -905,7 +977,7 @@ class NexusTUI:
 
 # ─── Demo Mode ────────────────────────────────────────────────────────────────
 
-def demo_mode():
+def demo_mode() -> None:
     """Run NexusTUI in demo mode with sample tasks."""
     console = Console(**DEFAULT_CONSOLE_CONFIG)
 

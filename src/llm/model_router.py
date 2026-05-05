@@ -5,7 +5,7 @@ Model router for selecting the appropriate LLM based on task requirements.
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from src.llm.client import LLMClient, Provider
 
@@ -331,7 +331,7 @@ class ModelRouter:
                 else:
                     # Quality primary: preference rank, then cost
                     cost = config.cost_per_1k_input + config.cost_per_1k_output
-                    return (rank, cost, 0)
+                    return (rank, int(cost * 100), 0)
 
             candidates.sort(key=task_score)
         elif prefer_speed:
@@ -354,7 +354,7 @@ class ModelRouter:
         prefer_speed: bool = False,
         model_hint: Optional[str] = None,
         streaming: bool = False,
-        callback=None,
+        callback: Optional[Callable[[str], None]] = None,
     ) -> tuple[str, any]:
         """
         Route a request to the appropriate model and return the response.

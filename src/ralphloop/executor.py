@@ -303,7 +303,7 @@ class RalphLoopExecutor:
 
     # ─── Context Monitor for Orchestrator ──────────────────────────────────
 
-    def _make_context_monitor(self) -> callable:
+    def _make_context_monitor(self) -> Callable[[], float]:
         """Create a context monitor callable for RalphLoop orchestrator."""
         def monitor() -> float:
             if self._current_context:
@@ -439,7 +439,7 @@ class RalphLoopExecutor:
 
     # ─── Agent Executor (dispatched by RalphLoop orchestrator) ────────────
 
-    def _make_agent_executor(self, task_type: TaskType):
+    def _make_agent_executor(self, task_type: TaskType) -> Callable[[dict, RalphState], dict]:
         """Create an agent executor closure for RalphLoop state machine."""
         def executor(task: dict, phase: RalphState) -> dict:
             return self._execute_phase(task, phase, task_type)
