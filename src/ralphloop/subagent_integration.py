@@ -311,15 +311,38 @@ Return the complete SPEC.md content."""
             constraints=["Follow SPEC.md template format"],
         )
         
-        # TODO: Replace with actual delegate_task call
-        return SubagentResult(
-            task_id=task_id,
-            role="specifier",
-            status="complete",
-            output=f"SpecifierAgent would generate SPEC.md for: {raw_requirements[:200]}...",
-            summary=f"SpecifierAgent ready. Would generate SPEC.md.",
-            duration_seconds=time.time() - start_time,
-        )
+        # Run via run_agent_loop
+        try:
+            spec_context = ImplementationContext(task=goal, messages=[], tool_results=[], test_results=[], error_log=[])
+            from .agent_loop import run_agent_loop, AgentLoopConfig
+            spec_config = AgentLoopConfig(max_turns=spec_def.max_turns)
+            result = run_agent_loop(
+                task=goal,
+                llm_client=self._get_llm_client(),
+                context=spec_context,
+                config=spec_config,
+                workdir=self.project_root,
+                tools=self._get_tools(),
+            )
+            return SubagentResult(
+                task_id=task_id,
+                role="specifier",
+                status="complete" if result.complete else "error",
+                tool_calls=result.tool_calls,
+                turns=result.turns,
+                output=result.final_content,
+                summary=result.final_content[:200] if result.final_content else "No output",
+                duration_seconds=time.time() - start_time,
+            )
+        except Exception as e:
+            return SubagentResult(
+                task_id=task_id,
+                role="specifier",
+                status="error",
+                output=str(e),
+                summary=f"Failed: {str(e)[:100]}",
+                duration_seconds=time.time() - start_time,
+            )
     
     def run_security_scan(self, files: list[str]) -> SubagentResult:
         """Run SecurityAgent to scan files for vulnerabilities.
@@ -344,14 +367,51 @@ Return the complete SPEC.md content."""
                 duration_seconds=time.time() - start_time,
             )
         
-        return SubagentResult(
-            task_id=task_id,
-            role="security",
-            status="complete",
-            output=f"SecurityAgent would scan: {', '.join(files[:5])}",
-            summary=f"SecurityAgent ready. Would scan {len(files)} files.",
-            duration_seconds=time.time() - start_time,
-        )
+        # Build goal for security scan
+        file_list = "\n".join([f"- {f}" for f in files[:20]])
+        goal = f"""Scan these files for security vulnerabilities:
+
+{file_list}
+{f'{len(files) - 20} more files...' if len(files) > 20 else ''}
+
+Provide a JSON security report with:
+- vulnerabilities: list of found issues
+- summary: brief summary
+- safe_to_deploy: true/false
+"""
+        
+        # Run via run_agent_Loop
+        try:
+            sec_context = ImplementationContext(task=goal, messages=[], tool_results=[], test_results=[], error_log=[])
+            from .agent_loop import run_agent_Loop, AgentLoopConfig
+            sec_config = AgentLoopConfig(max_turns=sec_def.max_turns)
+            result = run_agent_Loop(
+                task=goal,
+                llm_client=self._get_llm_client(),
+                context=sec_context,
+                config=sec_config,
+                workdir=self.project_root,
+                tools=self._get_tools(),
+            )
+            return SubagentResult(
+                task_id=task_id,
+                role="security",
+                status="complete" if result.complete else "error",
+                tool_calls=result.tool_calls,
+                turns=result.turns,
+                output=result.final_content,
+                summary=result.final_content[:200] if result.final_content else "No output",
+                duration_seconds=time.time() - start_time,
+            )
+        except Exception as e:
+            return SubagentResult(
+                task_id=task_id,
+                role="security",
+                status="error",
+                output=str(e),
+                summary=f"Failed: {str(e)[:100]}",
+                duration_seconds=time.time() - start_time,
+            )
     
     def aggregate_results(self, results: list[SubagentResult]) -> dict:
         """Aggregate multiple subagent results into a summary.
