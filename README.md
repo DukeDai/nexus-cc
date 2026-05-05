@@ -28,6 +28,7 @@ Nexus 是基于 **RalphLoop 状态机** 的 AI 编程智能体，通过显式状
 git clone https://github.com/DukeDai/nexus-cc.git
 cd nexus-cc
 pip install -e .
+pip install readchar>=4.0    # TUI 命令输入支持
 ```
 
 ---
@@ -38,19 +39,13 @@ pip install -e .
 
 ```bash
 # 必须设置
-export ANTHROPIC_API_KEY="sk-ant-..."    # Anthropic API Key（主要认证方式）
+export ANTHROPIC_API_KEY="***"    # Anthropic API Key
 
 # 可选配置
-export ANTHROPIC_AUTH_TOKEN=""            # 备用认证 Token（某些部署方式需要）
-export ANTHROPIC_BASE_URL=""               # API 代理/网关地址（用于代理/内网/兼容接口）
-export ANTHROPIC_MODEL=""                  # 指定模型，默认 claude-sonnet-4-20250514
-export NEXUS_PROVIDER="anthropic"          # LLM 提供商（anthropic/openai/ollama），默认 anthropic
-```
-
-### 依赖
-
-```bash
-pip install readchar>=4.0    # TUI 命令输入支持
+export ANTHROPIC_AUTH_TOKEN=***            # 备用认证 Token
+export ANTHROPIC_BASE_URL=""               # API 代理/网关地址
+export ANTHROPIC_MODEL=""                  # 默认 claude-sonnet-4-20250514
+export NEXUS_PROVIDER="anthropic"          # anthropic/openai/ollama
 ```
 
 ---
@@ -58,32 +53,26 @@ pip install readchar>=4.0    # TUI 命令输入支持
 ## 快速开始
 
 ```bash
-# RalphLoop 核心任务执行 (推荐)
+# RalphLoop 任务执行
 python nexus.py run --task "Create a REST API with FastAPI"
 
 # 交互式 TUI（实时监控 + 交互命令）
 python nexus.py tui -t "Create a REST API with FastAPI" -C /path/to/project
-
-# TUI 不带任务（空队列，仅监控）
-python nexus.py tui
+python nexus.py tui                         # 空队列，仅监控
 
 # 会话管理
 python nexus.py session list
 python nexus.py session resume <session-id>
 
-# MCP 服务器
+# MCP / Skills
 python nexus.py mcp list
 python nexus.py mcp presets
-
-# Skills 管理
 python nexus.py skills list
 ```
 
 ---
 
 ## TUI 交互命令
-
-启动 TUI 后，底部命令行可实时输入：
 
 | 命令 | 说明 |
 |------|------|
@@ -93,16 +82,14 @@ python nexus.py skills list
 | `reject` | 拒绝当前操作 |
 | `retry` | 重试当前任务 |
 | `skip` | 跳过当前任务 |
-| `undo` | 撤销（待实现） |
 | `quit` / `exit` | 退出 TUI |
 
-**交互式 Approval**：当 TUI 暂停在 DEGRADING 状态或危险命令检测时，输入 `approve`/`reject` 控制是否继续。
-
-**Escalation 响应**：当任务重试超限时，底部显示 `1=force-merge 2=rewrite 3=abandon 4=decompose`，直接按数字选择。
+**Approval**：DEGRADING 状态或危险命令时暂停，等待 `approve`/`reject`  
+**Escalation**：重试超限时按 `1=force-merge 2=rewrite 3=abandon 4=decompose`
 
 ---
 
-## 📋 待办清单
+## RalphLoop 状态机
 
 ```
   ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌──────────┐
@@ -115,9 +102,8 @@ python nexus.py skills list
   └─────────┘    └─────────┘  └─────────┘   └─────────┘
 ```
 
-**状态流转**：PLAN → ACT → VERIFY → REFLECT → (TRANSIT) → PLAN...
-
-**升级选项**：(1) 自行修复 (2) 求助同事 (3) 简化需求 (4) 放弃任务
+**流转**：PLAN → ACT → VERIFY → REFLECT → (TRANSIT) → PLAN...  
+**升级**：① 自行修复 ② 求助同事 ③ 简化需求 ④ 放弃任务
 
 ---
 
@@ -128,16 +114,10 @@ python nexus.py skills list
     ↓
 ┌──────────────────┐
 │ 1. RED           │ ← 写测试（预期失败）
-│    Write Test    │
 └────────┬─────────┘
          ↓
 ┌──────────────────┐
 │ 2. GREEN         │ ← 写实现（最小代码）
-│    Write Impl    │
-└────────┬─────────┘
-         ↓
-┌──────────────────┐
-│ 3. Run pytest    │
 └────────┬─────────┘
          ↓
     ┌────┴────┐
@@ -146,7 +126,7 @@ python nexus.py skills list
       Y       N
       ↓       ↓
   ┌────────┐ ┌──────────────────┐
-  │REFACTOR│ │ DEBUG LOOP(≤3) │
+  │REFACTOR│ │ DEBUG LOOP(≤3)  │
   │& COMMIT│ └──────────────────┘
   └────────┘         ↓ FAIL
                  ┌─────────┐
@@ -161,42 +141,43 @@ python nexus.py skills list
 ```
 Nexus
 ├── RalphLoop              # 状态机编排引擎
-│   ├── orchestrator.py    # 主引擎（479行）
-│   ├── agent_loop.py      # LLM 闭环执行（580行）
-│   ├── tdd_enforcer.py    # TDD 强制（528行）
-│   ├── transitions.py     # 转换表（287行）
-│   ├── states.py          # 8 状态枚举
-│   ├── subagent_registry.py    # 5 专业 Agent
-│   ├── subagent_integration.py  # Orchestrator↔delegate_task 桥接
-│   └── claude_md_loader.py      # CLAUDE.md 三层合并
+│   ├── orchestrator.typo    # 主引擎
+│   ├── agent_loop.typo      # LLM 闭环执行
+│   ├── tdd_enforcer.typo    # TDD 强制
+│   ├── transitions.typo     # 转换表
+│   ├── states.typo          # 8 状态枚举
+│   ├── subagent_registry.typo    # 5 专业 Agent
+│   ├── subagent_integration.typo  # Orchestrator↔delegate_task 桥接
+│   └── claude_md_loader.typo      # CLAUDE.md 三层合并
 ├── agents/                 # 多智能体专业化
-│   ├── specifier.py       # 需求 → 规格
-│   ├── implementer.py     # TDD 强制执行
-│   ├── reviewer.py        # 质量门（504行）
-│   └── security.py        # 安全扫描（676行）
+│   ├── specifier.typo       # 需求 → 规格
+│   ├── implementer.typo     # TDD 强制执行
+│   ├── reviewer.typo        # 质量门
+│   └── security.typo        # 安全扫描
 ├── verification/          # 提交前验证管道
-│   ├── tdd_gate.py        # 测试先行门（526行）
-│   ├── test_gate.py       # 基线对比（596行）
-│   ├── security_scan.py   # 密钥/注入/路径遍历（650行）
-│   ├── review_gate.py     # 独立审查（690行）
-│   └── pipeline.py        # 验证管道编排（621行）
+│   ├── tdd_gate.typo        # 测试先行门
+│   ├── test_gate.typo       # 基线对比
+│   ├── security_scan.typo   # 密钥/注入/路径遍历
+│   ├── review_gate.typo     # 独立审查
+│   └── pipeline.typo        # 验证管道编排
 ├── context/               # 上下文管理
-│   ├── monitor.py         # 4-tier 预算监控
-│   ├── claudemd.py        # CLAUDE.md 三层合并
-│   ├── checkpoint.py      # 状态检查点
-│   └── worktree.py        # Git Worktree 管理
+│   ├── monitor.typo         # 4-tier 预算监控
+│   ├── claudemd.typo        # CLAUDE.md 三层合并
+│   ├── checkpoint.typo      # 状态检查点
+│   └── worktree.typo        # Git Worktree 管理
+├── self_evolution/        # 自进化引擎
+│   └── engine.typo          # 错误监控+模式捕获+技能库
 ├── tui/                    # 交互式终端 UI
-│   ├── nexus_tui.py       # ANSI 实时仪表盘（594行）
-│   └── app.py             # Rich Live 主应用（567行）
+│   ├── nexus_tui.typo       # ANSI 实时仪表盘
+│   └── app.typo             # Rich Live 主应用
 ├── mcp/                    # MCP 服务器集成
-│   ├── client.py          # 异步生命周期（663行）
-│   ├── bridge.py          # 工具桥 + 缓存 + 限流（644行）
-│   └── presets.py         # GitHub/Slack/PostgreSQL 预设
+│   ├── client.typo          # 异步生命周期
+│   ├── bridge.typo          # 工具桥 + 缓存 + 限流
+│   └── presets.typo         # GitHub/Slack/PostgreSQL 预设
 └── llm/
-    └── client.py          # Anthropic/OpenAI/Ollama 统一（829行）
+    ├── client.typo          # Anthropic/OpenAI/Ollama 统一
+    └── model_router.typo    # 根据复杂度自动选模型
 ```
-
-**总代码量**：21,350 行 across 60+ 文件
 
 ---
 
@@ -227,8 +208,8 @@ Nexus
 
 ```
 ~/.claude/CLAUDE.md      ← 全局规范（工具偏好、安全策略）
-project/CLAUDE.md        ← 项目规范（架构决策、约定）
-directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
+project/CLAUDE.typo        ← 项目规范（架构决策、约定）
+directory/.CLAUDE.typo     ← 目录规范（模块规则、local overrides）
         ↓
     build_llm_system_prompt()
         ↓
@@ -237,76 +218,58 @@ directory/.CLAUDE.md     ← 目录规范（模块规则、local overrides）
 
 ---
 
-## 文件统计
-
-- **60+ Python 文件**
-- **~21,350 行代码**
-- **9 个模块包**
-- **19/19 CLI 测试通过**
-- **mypy: src/ 0 errors**
-
-### ✅ 已完成 (2026-05-05)
+## ✅ 已完成功能
 
 **核心架构**
-- ✅ RalphLoop 状态机 + orchestrator
-- ✅ LLM-driven agent_loop（真正调用 LLM + 工具闭环）
-- ✅ TDD Enforcer 完整集成（RED→GREEN→REFACTOR）
-- ✅ CLAUDE.md loader（三层合并）
-- ✅ SubagentIntegration 并行执行（Implementer + Reviewer 并行）
-- ✅ Subagent registry（5 种 Agent: specifier/implementer/reviewer/security/test）
-- ✅ verification pipeline（ACT 后自动 security scan + pytest + mypy）
-- ✅ MCP bridge + presets + connection lifecycle
-- ✅ RalphLoopExecutor 6层统一初始化（WAL/Checkpoint/SelfEvo/ModelRouter/Subagents/TDD）
-- ✅ Nexus TUI（Rich 实时仪表盘，可运行）
-- ✅ CLI 重构（Click 模块化）— 19/19 测试全通过
-- ✅ 类型注解清零 — `src/` 目录 0 mypy errors
-- ✅ TUI undo 命令实现
-
-**代码量**
-- 60+ Python 文件
-- ~21,350 行代码
-- 9 个模块包
-
-### ✅ 已完成 (2026-05-05)
-
-**功能完善**
+- [x] RalphLoop 状态机 + orchestrator
+- [x] LLM-driven agent_loop（真正调用 LLM + 工具闭环）
+- [x] TDD Enforcer 完整集成（RED→GREEN→REFACTOR）
+- [x] CLAUDE.typo loader（三层合并）
+- [x] SubagentIntegration 并行执行（Implementer + Reviewer 并行）
+- [x] Subagent registry（5 种 Agent）
+- [x] verification pipeline（ACT 后自动 security scan + pytest + mypy）
+- [x] MCP bridge + presets + connection lifecycle
+- [x] RalphLoopExecutor 6层统一初始化（WAL/Checkpoint/SelfEvo/ModelRouter/Subagents/TDD）
+- [x] Nexus TUI（Rich 实时仪表盘）
+- [x] CLI 重构（Click 模块化）— 19/19 测试全通过
+- [x] 类型注解清零 — `src/` 目录 0 mypy errors
 - [x] Model Router — 根据任务复杂度自动选模型
 - [x] Checkpoint 恢复 — 失败后自动从检查点恢复
 - [x] Self-Evolution — 错误监控+模式捕获+技能库
-
-**TUI 交互**
 - [x] Approval/Reject 暂停等待用户输入
-
-**工具链**
 - [x] 工具定义统一 — TOOL_DEFINITIONS 统一导出
 - [x] bash subprocess 安全 — 移除 shell=True + shlex.split
-
-**代码质量**
 - [x] 异常处理改进 — 无 `except: pass`
 
-### 📋 待优化 (非阻塞)
+---
+
+## 📋 待优化（非阻塞）
 
 - [ ] agent_loop.typo 巨型函数拆分
 - [ ] 更多端到端测试场景
 
 ---
 
-### 📊 测试结果 (2026-05-04)
+## 📊 测试对比 (2026-05-04)
 
 **任务**：创建 Flask REST API（GET/POST/DELETE /todos）
 
-| 工具 | 结果 | 代码行数 | 状态 |
-|------|------|----------|------|
-| **Nexus** | ✅ 成功 | 57行 | 通过 |
-| **Claude Code** | ✅ 成功 | 49行 | 通过 |
+| 工具 | 结果 | 代码行数 |
+|------|------|----------|
+| **Nexus** | ✅ 成功 | 57行 |
+| **Claude Code** | ✅ 成功 | 49行 |
 
-**验证结果**：
-- GET /todos → `[]` ✅
-- POST /todos (title="Test task") → `{"id":1,"title":"Test task","completed":false}` ✅
-- DELETE /todos/1 → `{"message":"Todo 1 deleted"}` ✅
-- GET /todos → `[]` ✅
+**验证**：GET/POST/DELETE 全部通过
 
-**结论**：Nexus 和 Claude Code 都能成功完成相同的 REST API 开发任务。Nexus 采用了更结构化的 RalphLoop 状态机流程，Claude Code 采用直接对话式。
+---
+
+## 统计数据
+
+- **60+** Python 文件
+- **~21,350** 行代码
+- **9** 个模块包
+- **19/19** CLI 测试通过
+- **mypy**: src/ 0 errors
 
 ---
 
