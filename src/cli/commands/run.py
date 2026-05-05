@@ -251,6 +251,51 @@ class RalphLoopExecutor:
                 else:
                     click.echo("[OK] Security scan passed")
 
+            # Run pytest on changed files
+            test_files = [f for f in changed_files if f.startswith("tests/") or f.endswith("_test.py") or f.endswith("_tests.py")]
+            if test_files:
+                click.echo(f"\n[VERIFY] Running pytest on {len(test_files)} test files...")
+                import subprocess
+                test_result = subprocess.run(
+                    ["python", "-m", "pytest", "-x", "-q", "--tb=short"] + test_files,
+                    capture_output=True,
+                    text=True,
+                    cwd=str(self.context.workdir)
+                )
+                if test_result.returncode != 0:
+                    click.echo(f"[!!] Pytest FAILED:\n{test_result.stdout}\n{test_result.stderr}")
+                    if self.retries < self.MAX_RETRIES:
+                        self.retries += 1
+                        click.echo(f"[!] Retry {self.retries}/{self.MAX_RETRIES}")
+                        return self.execute_task(task)
+                    else:
+                        return {
+                            "success": False,
+                            "turns": self.turns,
+                            "final_state": "VERIFICATION_FAILED",
+                            "content": self._format_tool_results(),
+                            "tool_count": len(self.context.tool_results),
+                            "error": f"Pytest failed: {test_result.stdout}",
+                        }
+                else:
+                    click.echo("[OK] Pytest passed")
+
+            # Run mypy type check on Python files
+            py_files = [f for f in changed_files if f.endswith(".py") and not f.startswith("tests/")]
+            if py_files:
+                click.echo(f"\n[VERIFY] Running mypy type check on {len(py_files)} files...")
+                import subprocess
+                mypy_result = subprocess.run(
+                    ["python", "-m", "mypy", "--ignore-missing-imports", "--no-error-summary"] + py_files,
+                    capture_output=True,
+                    text=True,
+                    cwd=str(self.context.workdir)
+                )
+                # mypy returns 0 even with errors, check output
+                if "error:" in mypy_result.stdout:
+                    click.echo(f"[!!] MyPy issues found:\n{mypy_result.stdout}")
+                    click.echo("[!] Continuing anyway (non-blocking)")
+
         # ── VERIFY state ───────────────────────────────────────
         self.state = RalphState.VERIFY
         click.echo(f"\n[VERIFY] Checking results...")
