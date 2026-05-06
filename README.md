@@ -243,9 +243,14 @@ directory/.CLAUDE.typo     ← 目录规范（模块规则、local overrides）
 
 ---
 
-## 📋 待优化（非阻塞）
+## ✅ 已完成功能
 
-- [x] agent_loop.typo 巨型函数拆分（_apply_diff 141行 → 4个<60行子函数）
+- [x] RalphLoopExecutor 6层统一初始化（WAL/Checkpoint/SelfEvo/ModelRouter/Subagents/TDD）
+- [x] Model Router — 根据任务复杂度自动选模型
+- [x] Checkpoint 恢复 — 失败后自动从检查点恢复
+- [x] Self-Evolution — 错误监控+模式捕获+技能库
+- [x] SubagentIntegration run_specifier/run_security_scan 真实调用
+- [x] agent_loop 巨型函数拆分（_apply_diff 141行 → 4个<60行子函数）
 
 ---
 
