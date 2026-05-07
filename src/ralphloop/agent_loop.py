@@ -66,10 +66,28 @@ class ToolExecutor:
 
     This is the tool side of the closed loop. It maps tool names to
     actual implementations and returns string results for the LLM.
+    
+    Supports MCP tools if mcp_client is provided.
     """
 
-    def __init__(self, workdir: Path | str | None = None):
+    def __init__(self, workdir: Path | str | None = None, mcp_client: Any | None = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
+        self.mcp_client = mcp_client
+        self._mcp_tool_names: set[str] = set()
+        if mcp_client is not None:
+            self._init_mcp_tools()
+
+    def _init_mcp_tools(self) -> None:
+        """Initialize MCP tool names from connected MCP server."""
+        try:
+            import asyncio
+            # Get tools from MCP server
+            tools = asyncio.get_event_loop().run_until_complete(
+                self.mcp_client.list_tools()
+            )
+            self._mcp_tool_names = {t.name for t in tools}
+        except Exception:
+            pass
 
     def execute(self, tool_name: str, tool_args: dict) -> str:
         """Execute a tool and return its result as a string."""
@@ -88,11 +106,33 @@ class ToolExecutor:
                 return self._grep(tool_args["pattern"], tool_args.get("path", str(self.workdir)), tool_args.get("file_glob"))
             elif tool_name == "apply_diff":
                 return self._apply_diff(tool_args["path"], tool_args["diff"])
+            elif tool_name == "edit_file":
+                return self._edit_file(
+                    tool_args["path"],
+                    tool_args.get("old_string", ""),
+                    tool_args.get("new_string", ""),
+                    tool_args.get("replace_all", False),
+                )
+            elif tool_name == "patch_file":
+                return self._patch_file(
+                    tool_args["path"],
+                    tool_args.get("patches", []),
+                )
             elif tool_name == "tdd_test":
                 return self._tdd_test(tool_args["test_path"], tool_args["impl_path"],
                                       tool_args["test_code"], tool_args["impl_code"])
             elif tool_name == "git_commit":
                 return self._git_commit(tool_args["message"], tool_args.get("push", False))
+            elif self.mcp_client and tool_name in self._mcp_tool_names:
+                # Delegate to MCP server
+                import asyncio
+                try:
+                    result = asyncio.get_event_loop().run_until_complete(
+                        self.mcp_client.call_tool(tool_name, tool_args)
+                    )
+                    return str(result) if result else "OK"
+                except Exception as e:
+                    return f"ERROR (MCP): {type(e).__name__}: {e}"
             else:
                 return f"ERROR: Unknown tool '{tool_name}'"
         except Exception as e:
@@ -195,6 +235,78 @@ class ToolExecutor:
                     f"{total_removed} removed, {total_added} added to {p}")
         except Exception as e:
             return f"ERROR writing {p}: {e}"
+
+    def _edit_file(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+        """Precise string replacement — safer than apply_diff for small edits.
+        
+        Args:
+            path: File to edit
+            old_string: Exact text to find (supports multi-line)
+            new_string: Replacement text
+            replace_all: If True, replace ALL occurrences; else only first
+        """
+        import difflib
+        p = (self.workdir / path).resolve()
+        if not p.exists():
+            return f"ERROR: File not found: {p}"
+        
+        with open(p) as f:
+            original = f.read()
+        
+        if old_string not in original:
+            return f"ERROR: old_string not found in {p}. Make sure the string matches exactly."
+        
+        if replace_all:
+            edited = original.replace(old_string, new_string)
+            count = original.count(old_string)
+        else:
+            edited = original.replace(old_string, new_string, 1)
+            count = 1
+        
+        with open(p, "w") as f:
+            f.write(edited)
+        
+        return f"OK: Replaced {count} occurrence(s) in {p}"
+
+    def _patch_file(self, path: str, patches: list[dict]) -> str:
+        """Apply multiple edits in sequence (batch patch).
+        
+        Each patch: {"old_string": "...", "new_string": "...", "replace_all": false}
+        Executes patches in order, allowing cascading edits.
+        """
+        p = (self.workdir / path).resolve()
+        if not p.exists():
+            return f"ERROR: File not found: {p}"
+        
+        with open(p) as f:
+            content = f.read()
+        
+        applied = 0
+        errors = []
+        for i, patch in enumerate(patches):
+            old_str = patch.get("old_string", "")
+            new_str = patch.get("new_string", "")
+            replace_all = patch.get("replace_all", False)
+            
+            if old_str not in content:
+                errors.append(f"Patch {i}: old_string not found")
+                continue
+            
+            if replace_all:
+                content = content.replace(old_str, new_str)
+            else:
+                content = content.replace(old_str, new_str, 1)
+            applied += 1
+        
+        if errors:
+            with open(p, "w") as f:
+                f.write(content)
+            return f"PARTIAL: Applied {applied}/{len(patches)} patches, errors: {'; '.join(errors)}"
+        
+        with open(p, "w") as f:
+            f.write(content)
+        
+        return f"OK: Applied {applied} patches to {p}"
 
     def _parse_hunks(self, diff: str) -> list[dict]:
         """Parse unified diff into structured hunks."""
@@ -420,6 +532,24 @@ TOOL_DEFINITIONS = [
         }, "required": ["path", "diff"]}
     },
     {
+        "name": "edit_file",
+        "description": "Precise string replacement — safer than apply_diff for small edits.",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "File to edit"},
+            "old_string": {"type": "string", "description": "Exact text to find (supports multi-line)"},
+            "new_string": {"type": "string", "description": "Replacement text"},
+            "replace_all": {"type": "boolean", "description": "If True, replace ALL occurrences; else only first"}
+        }, "required": ["path", "old_string", "new_string"]}
+    },
+    {
+        "name": "patch_file",
+        "description": "Apply multiple edits in sequence (batch patch).",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "File to patch"},
+            "patches": {"type": "array", "description": "Array of {old_string, new_string, replace_all?}"}
+        }, "required": ["path", "patches"]}
+    },
+    {
         "name": "tdd_test",
         "description": "Write test + stub impl, run pytest.",
         "parameters": {"type": "object", "properties": {
@@ -451,6 +581,8 @@ def run_agent_loop(
     streaming_callback: Callable[[str], None] | None = None,
     wal: Any | None = None,
     tdd_enforcer: Any | None = None,
+    model_router: Any | None = None,
+    mcp_client: Any | None = None,  # MCP client for external tools
 ) -> LoopResult:
     """Run the real LLM-driven closed loop.
 
@@ -476,6 +608,15 @@ def run_agent_loop(
     tools = tools or TOOL_DEFINITIONS
     workdir = workdir or Path.cwd()
 
+    # Initialize ModelRouter for dynamic model selection
+    if model_router is None:
+        try:
+            from ..llm.model_router import ModelRouter
+            model_router = ModelRouter()
+        except ImportError:
+            from llm.model_router import ModelRouter
+            model_router = ModelRouter()
+
     # Initialize Self-Evolution engine on context (if not already set)
     if not hasattr(context, "_evolution_engine") or context._evolution_engine is None:
         try:
@@ -485,7 +626,83 @@ def run_agent_loop(
         context._evolution_engine = SelfEvolutionEngine()
         context._evolution_engine.load_existing_skills()
 
-    executor = ToolExecutor(workdir=workdir)
+    executor = ToolExecutor(workdir=workdir, mcp_client=mcp_client)
+
+    # Initialize TDDEnforcer if enabled
+    if tdd_enforcer is None and config is not None and getattr(config, 'enable_tdd', False):
+        try:
+            from .tdd_enforcer import TDDEnforcer
+            tdd_enforcer = TDDEnforcer()
+        except ImportError:
+            pass
+
+    def _should_tdd_check(tc_name: str, tc_args: dict) -> bool:
+        """Check if tool call should trigger TDD enforcement."""
+        if tdd_enforcer is None:
+            return False
+        tdd_tools = {'write_file', 'apply_diff', 'edit_file', 'create_file'}
+        return tc_name in tdd_tools
+
+    def _tdd_enforce_write(tc_name: str, tc_args: dict) -> str:
+        """Enforce TDD workflow for write operations: RED → GREEN → REFACTOR."""
+        if tdd_enforcer is None:
+            return executor.execute(tc_name, tc_args)
+        
+        path = tc_args.get('path', '')
+        content = tc_args.get('content', '')
+        
+        # Check if it's a test file - skip TDD for tests
+        if 'test' in path.lower() or path.endswith('_test.py'):
+            return executor.execute(tc_name, tc_args)
+        
+        # Start TDD cycle for implementation files
+        cycle = tdd_enforcer.start_cycle(f"Implement: {path}")
+        
+        # RED: Generate test first
+        red_prompt = f"""Write a pytest test for: {content[:500]}
+
+File: {path}
+Write ONLY the test code, no implementation."""
+        
+        try:
+            test_response = active_client.complete(
+                messages=messages + [{"role": "user", "content": red_prompt}],
+                tools=None,
+            )
+            test_code = getattr(test_response, "content", "") or ""
+            
+            # Save test file
+            test_path = path.replace('.py', '_test.py') if not 'test' in path else path
+            executor.execute("write_file", {"path": test_path, "content": test_code})
+            
+            # Run RED - test should fail
+            passed, output = tdd_enforcer.run_red()
+            
+            # GREEN: Write minimal implementation
+            green_prompt = f"""Write minimal implementation for:
+Test: {test_code[:500]}
+
+File: {path}
+Write ONLY the implementation."""
+            green_response = active_client.complete(
+                messages=messages + [{"role": "user", "content": green_prompt}],
+                tools=None,
+            )
+            impl_code = getattr(green_response, "content", "") or ""
+            
+            # Execute the original write
+            result = executor.execute(tc_name, tc_args)
+            
+            # Verify GREEN
+            green_passed, green_output = tdd_enforcer.run_green()
+            
+            if green_passed:
+                return f"[TDD PASSED] {result}"
+            else:
+                return f"[TDD FAILED - code written anyway] {result}"
+        except Exception as e:
+            # Fallback: just execute normally
+            return executor.execute(tc_name, tc_args)
 
     # Import uuid for generating tool call IDs
     import uuid
@@ -520,28 +737,43 @@ def run_agent_loop(
     for turn in range(config.max_turns):
         turns += 1
 
+        # Dynamic model selection via ModelRouter (if available)
+        active_client = llm_client
+        if model_router is not None:
+            try:
+                selected_model = model_router.select_model(
+                    requires_tools=bool(tools),
+                    prefer_speed=getattr(config, 'prefer_speed', False) if config else False,
+                )
+                if selected_model:
+                    active_client = model_router.get_client(selected_model)
+                    result_model = selected_model
+            except Exception:
+                active_client = llm_client
+
         # Call LLM
         try:
             if config.streaming and streaming_callback:
-                # Streaming mode: accumulate chunks via callback
+                # Streaming mode: iterate over generator and collect text + tool calls
                 accumulated = []
-                def _token_cb(token: str):
-                    accumulated.append(token)
-                    streaming_callback(token)
-                response = llm_client.complete_streaming(
+                raw_tool_calls = []
+                
+                for event in active_client.complete_streaming(
                     messages=messages,
                     tools=tools,
                     system_prompt=system_prompt,
-                    callback=_token_cb,
-                )
-                # complete_streaming may return the full response; if not, reconstruct
-                if isinstance(response, dict):
-                    content = response.get("content", "") or "".join(accumulated)
-                else:
-                    content = getattr(response, "content", "") or "".join(accumulated)
-                raw_tool_calls = (response.get("tool_calls", []) or []) if isinstance(response, dict) else getattr(response, "tool_calls", []) or []
+                ):
+                    event_type = event.get("type", "")
+                    if event_type == "text":
+                        chunk = event.get("content", "")
+                        accumulated.append(chunk)
+                        streaming_callback(chunk)
+                    elif event_type == "tool_call":
+                        raw_tool_calls.append(event.get("tool_call", {}))
+                
+                content = "".join(accumulated)
             else:
-                response = llm_client.complete(
+                response = active_client.complete(
                     messages=messages,
                     tools=tools,
                 )
@@ -611,35 +843,54 @@ def run_agent_loop(
                 })
                 continue
 
-        # Execute tool calls
-        for tc in tool_calls:
-            total_tool_calls += 1
+        # Execute tool calls (parallel for independent I/O operations)
+        def _exec_single(tc: dict) -> tuple[str, str, dict]:
             tc_id = tc.get("id", "") or str(uuid.uuid4())[:8]
             tc_name = tc.get("name", "")
             tc_args = tc.get("args", tc.get("input", {}))
-
-            # WAL: log tool call BEFORE execution (crash recovery journaling)
             if wal is not None:
                 wal.log_tool_call(tc_name, tc_args, tc_id)
+            if _should_tdd_check(tc_name, tc_args):
+                result_str = _tdd_enforce_write(tc_name, tc_args)
+            else:
+                result_str = executor.execute(tc_name, tc_args)
+            return tc_id, result_str, tc_name
 
-            result_str = executor.execute(tc_name, tc_args)
-            context.add_tool_result(tc_name, result_str, success="ERROR" not in result_str)
+        # Parallel execution for read-only, independent tools
+        parallel_reads = [tc for tc in tool_calls if tc.get("name") in {"read_file", "glob", "grep"}]
+        write_tools = [tc for tc in tool_calls if tc.get("name") in {"write_file", "apply_diff", "edit_file", "patch_file", "bash", "git_commit", "tdd_test"}]
+        other_tools = [tc for tc in tool_calls if tc not in parallel_reads and tc not in write_tools]
 
-            # WAL: log tool result AFTER execution
+        # Execute reads in parallel
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=min(4, len(parallel_reads) or 1)) as pool:
+            futures = {pool.submit(_exec_single, tc): tc for tc in parallel_reads}
+            for future in as_completed(futures):
+                tc_id, result_str, tc_name = future.result()
+                tool_calls_remain = write_tools + other_tools
+                if wal is not None:
+                    wal.log_tool_result(tc_id, result_str, error=None if "ERROR" not in result_str else result_str)
+                context.add_tool_result(tc_name, result_str, success="ERROR" not in result_str)
+                messages.append({"role": "user", "content": result_str})
+
+        # Execute writes + other tools sequentially (order matters for writes)
+        for tc in write_tools + other_tools:
+            tc_id, result_str, tc_name = _exec_single(tc)
+            total_tool_calls += 1
             if wal is not None:
                 wal.log_tool_result(tc_id, result_str, error=None if "ERROR" not in result_str else result_str)
-
+            context.add_tool_result(tc_name, result_str, success="ERROR" not in result_str)
+            
             # Self-Evolution: learn from errors
             evolution: Any | None = getattr(context, "_evolution_engine", None)
             if evolution:
-                # Lazy import to avoid top-level import cycle
                 try:
                     from ..self_evolution import SelfEvolutionEngine
                 except ImportError:
                     from self_evolution import SelfEvolutionEngine
                 had_error = evolution.monitor_error(
                     tool_name=tc_name,
-                    tool_args=tc_args,
+                    tool_args=tc.get("args", tc.get("input", {})),
                     tool_result=result_str,
                     task_context=getattr(context, "task", ""),
                 )
@@ -648,11 +899,7 @@ def run_agent_loop(
                     if skill:
                         evolution.store_skill(skill)
 
-            # Add tool result to messages (plain string for MiniMax API compatibility)
-            messages.append({
-                "role": "user",
-                "content": result_str,
-            })
+            messages.append({"role": "user", "content": result_str})
 
         # Check budget
         budget = context.budget_percent
