@@ -167,6 +167,7 @@ class MCPConnectionManager:
         self._configs: dict[str, MCPServerConfig] = {}
         self._health_tasks: dict[str, asyncio.Task] = {}
         self._reconnect_tasks: dict[str, asyncio.Task] = {}
+        self._sessions: dict[str, Any] = {}  # name -> MCPClient session
         self._lock = asyncio.Lock()
         self._mcp_client: Any = None  # Lazy-loaded when mcp package available
 
@@ -242,8 +243,8 @@ class MCPConnectionManager:
                 raise ConnectionError(f"Failed to connect to '{name}': {e}") from e
 
     async def _connect_stdio(self, name: str, config: MCPServerConfig) -> None:
-        """Connect via stdio transport."""
-        client = await self._ensure_mcp_client()
+        """Connect via stdio transport using real MCPClient."""
+        ClientCls = await self._ensure_mcp_client()
 
         # Filter environment for security
         safe_env = self._filter_environment(config.env)
@@ -251,37 +252,54 @@ class MCPConnectionManager:
         # Build command
         cmd = [config.command, *config.args] if config.args else [config.command]
 
-        # Create client session
-        # Note: In production, this would use the actual MCP client API
         logger.debug(f"Connecting to stdio server: {' '.join(cmd)}")
 
-        # Placeholder for actual stdio connection
-        # In real implementation, this would be:
-        # async with client.cli(
-        #     command=config.command,
-        #     args=config.args,
-        #     env=safe_env,
-        # ) as session:
-        #     tools = await session.list_tools()
-        #     self._servers[name].tools = [t.name for t in tools]
+        # Create real MCPClient and connect
+        mcp_config = MCPConfig(
+            name=config.name or name,
+            command=config.command,
+            args=config.args,
+            env=safe_env,
+            timeout=config.timeout,
+        )
+        client = ClientCls(mcp_config, timeout=config.timeout)
+        await client.connect()
+        self._sessions[name] = client
 
-        # Simulate connection for now
-        await asyncio.sleep(0.1)  # Simulated connection delay
+        # Fetch and store available tools
+        try:
+            tools = await client.list_tools()
+            self._servers[name].tools = [t.name for t in tools]
+            logger.debug(f"Server '{name}' has {len(tools)} tools: {self._servers[name].tools}")
+        except Exception as e:
+            logger.warning(f"Could not list tools for '{name}': {e}")
+            self._servers[name].tools = []
 
     async def _connect_http(self, name: str, config: MCPServerConfig) -> None:
-        """Connect via HTTP transport."""
-        # Placeholder for actual HTTP connection
-        # In real implementation, this would use:
-        # async with client.streamable_http(
-        #     url=config.url,
-        #     headers=config.headers,
-        #     timeout=config.timeout,
-        # ) as session:
-        #     tools = await session.list_tools()
-        #     self._servers[name].tools = [t.name for t in tools]
+        """Connect via HTTP transport using real MCPClient."""
+        ClientCls = await self._ensure_mcp_client()
 
         logger.debug(f"Connecting to HTTP server: {config.url}")
-        await asyncio.sleep(0.1)  # Simulated connection delay
+
+        # Create real MCPClient with HTTP transport
+        mcp_config = MCPConfig(
+            name=config.name or name,
+            url=config.url,
+            headers=config.headers,
+            timeout=config.timeout,
+        )
+        client = ClientCls(mcp_config, timeout=config.timeout)
+        await client.connect()
+        self._sessions[name] = client
+
+        # Fetch and store available tools
+        try:
+            tools = await client.list_tools()
+            self._servers[name].tools = [t.name for t in tools]
+            logger.debug(f"Server '{name}' has {len(tools)} tools: {self._servers[name].tools}")
+        except Exception as e:
+            logger.warning(f"Could not list tools for '{name}': {e}")
+            self._servers[name].tools = []
 
     def _filter_environment(self, extra_env: dict[str, str]) -> dict[str, str]:
         """Filter environment variables for security.
@@ -361,8 +379,12 @@ class MCPConnectionManager:
                 return False
 
             try:
-                # In production, this would ping the server
-                # e.g., await session.list_tools() as a lightweight check
+                # Real health check via MCP session ping
+                session = self._sessions.get(name)
+                if session:
+                    healthy = await session.ping()
+                    if not healthy:
+                        raise ConnectionError("Ping failed")
                 server_info.last_health_check = datetime.now()
 
                 if server_info.state != MCPConnectionState.DEGRADED:
@@ -409,11 +431,13 @@ class MCPConnectionManager:
 
             config = self._configs[name]
 
-        # Execute tool call (outside lock for concurrent calls)
+        # Execute tool call via real MCP session
+        session = self._sessions.get(name)
+        if not session:
+            raise ConnectionError(f"No active session for server '{name}'")
+
         try:
-            # In production, this would call the actual MCP tool
-            # result = await session.call_tool(tool_name, arguments or {})
-            result = {"result": f"Mock result from {tool_name}"}
+            result = await session.call_tool(tool_name, arguments or {})
 
             async with self._lock:
                 if server_info.state == MCPConnectionState.DEGRADED:
@@ -455,8 +479,13 @@ class MCPConnectionManager:
                 self._reconnect_tasks[name].cancel()
                 del self._reconnect_tasks[name]
 
-            # In production, close the MCP session properly
-            # await session.close()
+            # Close the real MCP session
+            if name in self._sessions:
+                try:
+                    await self._sessions[name].disconnect()
+                except Exception as e:
+                    logger.warning(f"Error disconnecting session '{name}': {e}")
+                del self._sessions[name]
 
             server_info.state = MCPConnectionState.DISCONNECTED
             logger.info(f"Disconnected from MCP server '{name}'")
