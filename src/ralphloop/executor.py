@@ -37,7 +37,7 @@ from .orchestrator import (
     EscalationOption,
 )
 from .transitions import TransitionTrigger
-from .agent_loop import run_agent_loop, AgentLoopConfig, TOOL_DEFINITIONS
+from .agent_loop import run_agent_loop, AgentLoopConfig
 from .implementation_context import ImplementationContext
 from .subagent_integration import (
     SubagentIntegration,
@@ -50,7 +50,8 @@ from context.wal import WALManager, WALEntry          # src/context/wal.py
 from context.checkpoint import CheckpointManager       # src/context/checkpoint.py
 from self_evolution.engine import SelfEvolutionEngine, LearnedSkill  # src/self_evolution/
 from llm.model_router import ModelRouter, TaskType, Provider         # src/llm/
-from llm.client import LLMClient                                          # src/llm/
+from llm.client import LLMClient                                      # src/llm/
+from engine.registry import ToolRegistry                             # src/engine/registry.py
 
 
 # ─── Result Types ─────────────────────────────────────────────────────────────
@@ -142,6 +143,7 @@ class RalphLoopExecutor:
         checkpoint_interval: int = 5,
         max_retries: int = 3,
         model_router: ModelRouter | None = None,
+        tool_registry: ToolRegistry | None = None,
         custom_tools: list[dict] | None = None,
         mcp_bridge: Optional[Any] = None,
     ):
@@ -160,14 +162,16 @@ class RalphLoopExecutor:
         self.enable_verification_pipeline = enable_verification_pipeline
         self.checkpoint_interval = checkpoint_interval
         self.max_retries = max_retries
-        self.custom_tools = custom_tools or TOOL_DEFINITIONS
         self._mcp_bridge = mcp_bridge
+        self._tool_registry = tool_registry
+        self.custom_tools = custom_tools  # resolved in _init_tool_registry()
 
         # Initialize components (order matters: router before subagent integration)
         self._init_wal()
         self._init_checkpoint()
         self._init_self_evolution()
         self._init_model_router(model_router)
+        self._init_tool_registry()       # depends on custom_tools being set
         self._init_subagent_integration()  # depends on _model_router
         self._init_tdd_enforcer()
         self._init_verification_pipeline()
@@ -273,6 +277,38 @@ class RalphLoopExecutor:
             llm_client=self._llm_client,
             model_router=getattr(self, '_router', None),
         )
+
+    def _init_tool_registry(self) -> None:
+        """Initialize ToolRegistry for dynamic tool discovery and execution.
+
+        Resolution order:
+        1. If a tool_registry was passed to __init__, use it directly.
+        2. If custom_tools list was passed, use those as extra tools on top of
+           auto-discovered nexus.tools (if the package exists).
+        3. Fall back to agent_loop TOOL_DEFINITIONS.
+        """
+        from .agent_loop import TOOL_DEFINITIONS  # lazy to avoid circular
+
+        if self._tool_registry is not None:
+            # Caller provided a pre-configured registry
+            self.custom_tools = self._tool_registry.definitions()
+            return
+
+        # Build a registry: auto-discover nexus.tools + merge custom_tools
+        registry = ToolRegistry()
+        registry.register_all(package_name="nexus.tools")
+        discovered = registry.definitions()
+
+        # Merge in any custom tool definitions (list[dict])
+        if self.custom_tools:
+            self.custom_tools = discovered + self.custom_tools
+        elif discovered:
+            self.custom_tools = discovered
+        else:
+            # No package, no custom — fall back to static TOOL_DEFINITIONS
+            self.custom_tools = TOOL_DEFINITIONS
+
+        self._tool_registry = registry
 
     def _init_tdd_enforcer(self) -> None:
         """Initialize TDDEnforcer for RED→GREEN→REFACTOR discipline."""
@@ -772,6 +808,15 @@ class RalphLoopExecutor:
             except Exception:
                 pass  # Non-fatal
 
+        # ── SelfEvo闭环: 从验证结果学习 ─────────────────────────────────────
+        # Feed verification outcome to SelfEvolutionEngine so it can capture
+        # successful patterns (not just errors) for future sessions.
+        self._learn_from_verification_outcome(
+            pytest_passed=pytest_passed,
+            pytest_output=pytest_output,
+            task_context=task,
+        )
+
         # For simple tasks: files created = pass (lenient)
         # For complex tasks with pytest: pytest must pass
         # For MCP bridge tasks: MCP verification result is included in response
@@ -878,6 +923,42 @@ class RalphLoopExecutor:
         self._total_tokens += tokens
 
     # ─── Self-Evolution ────────────────────────────────────────────────────
+
+    def _learn_from_verification_outcome(
+        self,
+        pytest_passed: bool | None,
+        pytest_output: str,
+        task_context: str,
+    ) -> None:
+        """Learn from VERIFY phase outcomes — both successes and failures.
+
+        This closes the SelfEvo loop: verification results are fed to the
+        engine so learned skills can be retrieved for future similar tasks.
+        """
+        if not self._evo:
+            return
+
+        if pytest_passed is False:
+            # Test failure: monitor as error
+            self._evo.monitor_error(
+                tool_name="pytest",
+                tool_args={},
+                tool_result=pytest_output[:500],
+                task_context=task_context,
+            )
+            skill = self._evo.analyze_and_capture()
+            if skill:
+                self._evo.store_skill(skill)
+                self._skills_learned_count += 1
+        elif pytest_passed is True:
+            # Test success: log as successful pattern for pattern recognition
+            self._evo.monitor_error(
+                tool_name="pytest",
+                tool_args={},
+                tool_result=f"[SUCCESS] {pytest_output[:200]}",
+                task_context=task_context,
+            )
+            # No skill capture on success, but error is logged for future analysis
 
     def _learn_from_errors(self, ctx: ImplementationContext) -> None:
         """Learn from any errors encountered during execution."""

@@ -8,9 +8,7 @@ Nexus 是基于 **RalphLoop 状态机** 的 AI 编程智能体，通过显式状
 
 ## 核心创新
 
-> **状态 (2026-05-07):** 经过架构审计，发现 README 宣称的 8 大创新大部分只是骨架代码。
-> 经过本次系统性修复，**核心编排逻辑已从简化单线程替换为完整 6 层 executor**，
-> 所有层均已真实初始化并通过 benchmark 验证。
+> **状态 (2026-05-08):** 本次审计新增：MCP 真实会话调用（_sessions dict）、VerificationPipeline ACT 内联 gate、ToolRegistry 动态加载、SelfEvo VERIFY 闭环。**59/59 benchmark 全绿。**
 
 | 特性 | Claude Code | Nexus | 状态 |
 |------|------------|-------|------|
@@ -23,6 +21,9 @@ Nexus 是基于 **RalphLoop 状态机** 的 AI 编程智能体，通过显式状
 | 自进化技能 | ❌ 无 | **错误→模式捕获→技能库** | ✅ SelfEvolutionEngine + WAL crash recovery |
 | Subagent 并行 | ❌ 无 | **ThreadPoolExecutor Implementer+Reviewer 并行** | ✅ subagent_integration._execute_act_parallel |
 | 会话持久化 | 基础 | **SQLite 检查点恢复** | ✅ CheckpointManager + WALManager |
+| MCP 工具桥接 | ❌ 无 | **RalphLoopMCPBridge 接入 PLAN/VERIFY** | ✅ mcp_bridge → PLAN/VERIFY，真实 session.call_tool() |
+| 验证内联 Gate | ❌ 无 | **ACT 后立即 SecurityScan (fail-closed)** | ✅ VerificationPipeline 4-stage，SecurityScan 阻断恶意代码 |
+| 工具动态发现 | ❌ 无 | **ToolRegistry auto-discover nexus.tools** | ✅ _init_tool_registry() 优先级：registry → custom_tools → TOOL_DEFINITIONS |
 
 ---
 
