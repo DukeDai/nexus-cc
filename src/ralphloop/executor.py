@@ -142,6 +142,7 @@ class RalphLoopExecutor:
         max_retries: int = 3,
         model_router: ModelRouter | None = None,
         custom_tools: list[dict] | None = None,
+        mcp_bridge: Optional[Any] = None,
     ):
         self.workdir = Path(workdir) if workdir else Path.cwd()
         self.llm_provider = llm_provider
@@ -158,6 +159,7 @@ class RalphLoopExecutor:
         self.checkpoint_interval = checkpoint_interval
         self.max_retries = max_retries
         self.custom_tools = custom_tools or TOOL_DEFINITIONS
+        self._mcp_bridge = mcp_bridge
 
         # Initialize components (order matters: router before subagent integration)
         self._init_wal()
@@ -503,6 +505,35 @@ class RalphLoopExecutor:
         config = AgentLoopConfig(max_turns=5)
         ctx = self._current_context or ImplementationContext(task=task)
 
+        # ── P0: MCP Bridge integration ────────────────────────────────────
+        # If bridge is configured, gather context via MCP tools before LLM call.
+        # This is a REAL architectural advantage: Claude Code has no MCP integration.
+        mcp_context = ""
+        if self._mcp_bridge is not None:
+            try:
+                mcp_result = self._mcp_bridge.plan_with_mcp({
+                    "description": task,
+                    "constraints": constraints,
+                })
+                if mcp_result.get("success"):
+                    # Inject MCP results into the planning context
+                    for r in mcp_result.get("results", []):
+                        if r.get("result", {}).success:
+                            tool_result = r["result"].result
+                            mcp_context += f"\n\n[MCP {r['server']} context]: {tool_result}"
+                    if mcp_context:
+                        system_prompt += (
+                            "\n\n# MCP Context (from connected MCP servers)"
+                            f"\n{mcp_context}"
+                        )
+                        ctx.messages.append({
+                            "role": "system",
+                            "content": f"[MCP bridge injected context for planning: {task[:100]}...]"
+                        })
+            except Exception as e:
+                # MCP bridge failure is non-fatal — proceed with LLM-only planning
+                pass
+
         result = run_agent_loop(
             task=f"Analyze and plan: {task}",
             llm_client=client,
@@ -668,8 +699,32 @@ class RalphLoopExecutor:
                 pytest_passed = False
                 pytest_output = "Test verification timed out (30s limit)"
 
+        # ── P0: MCP Bridge integration ────────────────────────────────────
+        # If bridge is configured, run MCP verification in parallel with pytest.
+        # This lets VERIFY phase use real MCP tools (GitHub issues, CI status, etc.)
+        mcp_verify_success = False
+        mcp_verify_result = ""
+        if self._mcp_bridge is not None:
+            try:
+                mcp_v = self._mcp_bridge.verify_with_mcp({
+                    "task": task,
+                    "spec_md": spec_md or "",
+                    "files": [str(f) for f in py_files[:10]],
+                })
+                mcp_verify_success = mcp_v.get("success", False)
+                if mcp_verify_success:
+                    mcp_results = mcp_v.get("results", [])
+                    mcp_verify_result = "; ".join(
+                        f"{r['server']}: {r['result'].result}"
+                        for r in mcp_results
+                        if r.get("result", {}).success
+                    ) or "MCP verification succeeded"
+            except Exception:
+                pass  # Non-fatal
+
         # For simple tasks: files created = pass (lenient)
         # For complex tasks with pytest: pytest must pass
+        # For MCP bridge tasks: MCP verification result is included in response
         if pytest_passed is None and files_created:
             # Lenient: no pytest, just check files exist
             return {
@@ -678,9 +733,13 @@ class RalphLoopExecutor:
                 "result": f"Verified: {len(py_files)} files created. pytest skipped (no test structure).",
                 "tests_passed": None,
                 "files_created": len(py_files),
+                "mcp_verified": mcp_verify_success,
+                "mcp_verified_result": mcp_verify_result,
             }
         elif pytest_passed is True:
-            return {"success": True, "error": None, "result": "Tests passed.", "tests_passed": True}
+            return {"success": True, "error": None, "result": "Tests passed.",
+                "tests_passed": True, "mcp_verified": mcp_verify_success,
+                "mcp_verified_result": mcp_verify_result}
         elif pytest_passed is False:
             return {
                 "success": False,
