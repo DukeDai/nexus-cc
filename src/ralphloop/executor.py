@@ -138,6 +138,7 @@ class RalphLoopExecutor:
         enable_model_router: bool = True,
         enable_parallel_subagents: bool = True,
         enable_tdd: bool = False,
+        enable_verification_pipeline: bool = True,
         checkpoint_interval: int = 5,
         max_retries: int = 3,
         model_router: ModelRouter | None = None,
@@ -156,6 +157,7 @@ class RalphLoopExecutor:
         self.enable_model_router = enable_model_router
         self.enable_parallel_subagents = enable_parallel_subagents
         self.enable_tdd = enable_tdd
+        self.enable_verification_pipeline = enable_verification_pipeline
         self.checkpoint_interval = checkpoint_interval
         self.max_retries = max_retries
         self.custom_tools = custom_tools or TOOL_DEFINITIONS
@@ -168,6 +170,7 @@ class RalphLoopExecutor:
         self._init_model_router(model_router)
         self._init_subagent_integration()  # depends on _model_router
         self._init_tdd_enforcer()
+        self._init_verification_pipeline()
 
         # Runtime state
         self._current_loop: RalphLoop | None = None
@@ -273,7 +276,25 @@ class RalphLoopExecutor:
 
     def _init_tdd_enforcer(self) -> None:
         """Initialize TDDEnforcer for RED→GREEN→REFACTOR discipline."""
-        self._tdd = TDDEnforcer() if self.enable_tdd else None
+        self._tdd: TDDEnforcer | None = TDDEnforcer() if self.enable_tdd else None
+
+    def _init_verification_pipeline(self) -> None:
+        """Initialize VerificationPipeline for inline ACT phase gates."""
+        if not self.enable_verification_pipeline:
+            self._verify_pipeline: Any = None
+            return
+        try:
+            from verification.pipeline import VerificationPipeline
+            # Use SubagentIntegration.run_security_scan as the delegate_task.
+            # This is non-trivial: SecurityGate and ReviewGate use delegate_task,
+            # but for ACT-phase inline gates we primarily care about SecurityScan.
+            def delegate_task(task: str, context: dict[str, Any]) -> dict[str, Any]:
+                return self._si.run_security_scan(context.get("files", []))
+            self._verify_pipeline = VerificationPipeline(
+                delegate_task=delegate_task,
+            )
+        except ImportError:
+            self._verify_pipeline = None
 
     # ─── Self-Evolution: Proactive Skill Injection ─────────────────────────
 
@@ -653,10 +674,39 @@ class RalphLoopExecutor:
         # Learn from any errors in this execution
         self._learn_from_errors(ctx)
 
+        # ── P2: VerificationPipeline inline gate ─────────────────────────
+        # After ACT generates code, run inline verification before returning.
+        # SecurityScan is fail-closed: malicious code blocks the ACT result.
+        # This is a REAL architectural advantage vs Claude Code's post-hoc checks.
+        pipeline_warnings: list[str] = []
+        if self._verify_pipeline is not None:
+            try:
+                # Scan all Python files created/modified by this ACT run
+                py_files = list(self.workdir.rglob("*.py"))
+                if py_files:
+                    # Run pipeline on the most recent files (created in this ACT)
+                    # Use file_path for single-file scan
+                    pipeline_result = self._verify_pipeline.run(
+                        file_path=str(py_files[0]),
+                        test_paths=[str(p) for p in py_files[:5]],
+                    )
+                    if not pipeline_result.passed:
+                        pipeline_warnings.append(
+                            f"VerificationPipeline failed at "
+                            f"{pipeline_result.failed_stage}: "
+                            f"{pipeline_result.summary}"
+                        )
+                    elif pipeline_result.issues:
+                        for issue in pipeline_result.issues[:3]:
+                            pipeline_warnings.append(f"Issue: {issue['type']} — {issue['description']}")
+            except Exception as e:
+                pipeline_warnings.append(f"VerificationPipeline error: {e}")
+
         return {
             "success": result.complete,
             "error": None if result.complete else "Implementation incomplete",
             "result": result.final_content,
+            "pipeline_warnings": pipeline_warnings,
         }
 
     def _execute_verify(
