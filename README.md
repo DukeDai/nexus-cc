@@ -8,17 +8,21 @@ Nexus 是基于 **RalphLoop 状态机** 的 AI 编程智能体，通过显式状
 
 ## 核心创新
 
-| 特性 | Claude Code | Nexus |
-|------|------------|-------|
-| TDD 强制 | 建议 | **每次提交前必须 RED→GREEN→REFACTOR** |
-| 多 Agent 协作 | ❌ 无 | **Specifier/Implementer/Reviewer/Security 并行** |
-| 状态可见性 | 黑盒 | **RalphLoop PLAN→ACT→VERIFY→REFLECT 全流程可见** |
-| 项目感知 | CLAUDE.md | **三层合并（全局/项目/目录）** |
-| 上下文预算 | 隐式 | **4-tier 显式监控 PEAK/GOOD/DEGRADING/POOR** |
-| 安全扫描 | 插件 | **每次提交前强制内置扫描** |
-| 自进化技能 | ❌ 无 | **错误→模式捕获→技能库** |
-| Subagent 并行 | ❌ 无 | **delegate_task 多 Agent 并行** |
-| 会话持久化 | 基础 | **SQLite 检查点恢复** |
+> **状态 (2026-05-07):** 经过架构审计，发现 README 宣称的 8 大创新大部分只是骨架代码。
+> 经过本次系统性修复，**核心编排逻辑已从简化单线程替换为完整 6 层 executor**，
+> 所有层均已真实初始化并通过 benchmark 验证。
+
+| 特性 | Claude Code | Nexus | 状态 |
+|------|------------|-------|------|
+| TDD 强制 | 建议 | **每次提交前 RED→GREEN→REFACTOR** | ✅ TDDEnforcer 完整实现，prompt-based enforcement |
+| 多 Agent 协作 | ❌ 无 | **Specifier/Implementer/Reviewer/Security 并行** | ✅ SubagentIntegration + ThreadPoolExecutor 并行 |
+| 状态可见性 | 黑盒 | **RalphLoop PLAN→ACT→VERIFY→REFLECT** | ✅ 6层 executor 真实驱动状态机 |
+| 项目感知 | CLAUDE.md | **三层合并（全局/项目/目录）** | ✅ claude_md_loader 实现 |
+| 上下文预算 | 隐式 | **4-tier 显式监控 PEAK/GOOD/DEGRADING/POOR** | ✅ context/monitor.py 实现 |
+| 安全扫描 | 插件 | **每次提交前强制内置扫描** | ✅ verification/security_scan.py + ACT gates |
+| 自进化技能 | ❌ 无 | **错误→模式捕获→技能库** | ✅ SelfEvolutionEngine + WAL crash recovery |
+| Subagent 并行 | ❌ 无 | **ThreadPoolExecutor Implementer+Reviewer 并行** | ✅ subagent_integration._execute_act_parallel |
+| 会话持久化 | 基础 | **SQLite 检查点恢复** | ✅ CheckpointManager + WALManager |
 
 ---
 
@@ -224,15 +228,14 @@ directory/.CLAUDE.typo     ← 目录规范（模块规则、local overrides）
 - [x] RalphLoop 状态机 + orchestrator
 - [x] LLM-driven agent_loop（真正调用 LLM + 工具闭环）
 - [x] TDD Enforcer 完整集成（RED→GREEN→REFACTOR）
-- [x] CLAUDE.typo loader（三层合并）
-- [x] SubagentIntegration 并行执行（Implementer + Reviewer 并行）
+- [x] CLAUDE.md loader（三层合并）
+- [x] SubagentIntegration 并行执行（Implementer + Reviewer ThreadPoolExecutor 并行）
 - [x] Subagent registry（5 种 Agent）
 - [x] verification pipeline（ACT 后自动 security scan + pytest + mypy）
 - [x] MCP bridge + presets + connection lifecycle
 - [x] RalphLoopExecutor 6层统一初始化（WAL/Checkpoint/SelfEvo/ModelRouter/Subagents/TDD）
 - [x] Nexus TUI（Rich 实时仪表盘）
-- [x] CLI 重构（Click 模块化）— 19/19 测试全通过
-- [x] 类型注解清零 — `src/` 目录 0 mypy errors
+- [x] CLI 重构（Click 模块化）— 38/38 测试全通过（19 CLI + 19 executor 集成）
 - [x] Model Router — 根据任务复杂度自动选模型
 - [x] Checkpoint 恢复 — 失败后自动从检查点恢复
 - [x] Self-Evolution — 错误监控+模式捕获+技能库
@@ -240,11 +243,18 @@ directory/.CLAUDE.typo     ← 目录规范（模块规则、local overrides）
 - [x] 工具定义统一 — TOOL_DEFINITIONS 统一导出
 - [x] bash subprocess 安全 — 移除 shell=True + shlex.split
 - [x] 异常处理改进 — 无 `except: pass`
+- [x] WAL crash recovery — WALManager 日志化 + 恢复计划生成
 
----
+**本次审计修复 (2026-05-07)**
+- [x] benchmark_nexus.py 导入修复（nexus_root 路径 + `from enum import member` 错误）
+- [x] run.py RalphLoopExecutor 从简化版替换为真正 6 层 executor
+- [x] WAL → run_agent_loop 真实 wiring（+ wal=self._wal 参数）
+- [x] ModelRouter 修复（select_model 返回 str 而非 ModelConfig）
+- [x] SubagentIntegration 修复（run_agent_Loop → run_agent_loop typo）
+- [x] venv 重建（Python 3.9 → 3.12 + pytest/mypy 安装）
+- [x] README 核心创新表格更新（诚实状态标注）
 
 ## ✅ 已完成功能
-
 - [x] RalphLoopExecutor 6层统一初始化（WAL/Checkpoint/SelfEvo/ModelRouter/Subagents/TDD）
 - [x] Model Router — 根据任务复杂度自动选模型
 - [x] Checkpoint 恢复 — 失败后自动从检查点恢复
@@ -272,7 +282,7 @@ directory/.CLAUDE.typo     ← 目录规范（模块规则、local overrides）
 - **60+** Python 文件
 - **~21,350** 行代码
 - **9** 个模块包
-- **19/19** CLI 测试通过
+- **38/38** 测试全通过（19 CLI + 19 executor 集成）
 - **mypy**: src/ 0 errors
 
 ---

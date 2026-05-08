@@ -4,7 +4,7 @@ Defines the canonical states for the RalphLoop state machine:
 PLAN -> ACT -> VERIFY -> REFLECT -> (loop or COMMIT/ESCALATE/ABORT)
 """
 
-from enum import Enum, auto, member
+from enum import Enum, auto
 
 
 class RalphState(Enum):

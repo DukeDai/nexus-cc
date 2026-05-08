@@ -380,12 +380,12 @@ Provide a JSON security report with:
 - safe_to_deploy: true/false
 """
         
-        # Run via run_agent_Loop
+        # Run via run_agent_loop
         try:
             sec_context = ImplementationContext(task=goal, messages=[], tool_results=[], test_results=[], error_log=[])
-            from .agent_loop import run_agent_Loop, AgentLoopConfig
+            from .agent_loop import run_agent_loop, AgentLoopConfig
             sec_config = AgentLoopConfig(max_turns=sec_def.max_turns)
-            result = run_agent_Loop(
+            result = run_agent_loop(
                 task=goal,
                 llm_client=self._get_llm_client(),
                 context=sec_context,
@@ -522,14 +522,14 @@ Your job is to help implement code. Be precise, follow TDD, and use tools wisely
                     "fast": TaskType.FAST,
                 }
                 nexus_tt = task_type_map.get(task_type, TaskType.CODE)
-                model_info = self.model_router.select_model(nexus_tt)
-                # Get API key for this provider
-                api_key = self.model_router.api_keys.get(model_info.provider, "")
-                base_url = self.model_router.base_urls.get(model_info.provider, "")
+                model_name = self.model_router.select_model(nexus_tt)
+                config = self.model_router.models[model_name]
+                api_key = self.model_router.api_keys.get(config.provider, "")
+                base_url = self.model_router.base_urls.get(config.provider, "")
                 from ..llm.client import LLMClient
                 return LLMClient(
-                    provider=model_info.provider,
-                    model=model_info.model,
+                    provider=config.provider,
+                    model=model_name,
                     api_key=api_key,
                     base_url=base_url,
                 )

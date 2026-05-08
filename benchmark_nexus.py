@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 
 # Setup
-nexus_root = Path.home() / "Dev/nexus"
+nexus_root = Path.home() / "dev/nexus-cc"
 sys.path.insert(0, str(nexus_root / "src"))
 
 RESULTS = []

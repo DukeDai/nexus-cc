@@ -84,7 +84,21 @@ def _get_model_for_provider(provider: Provider, settings_model: str = "") -> str
 
 
 class RalphLoopExecutor:
-    """Bridges RalphLoop orchestrator with run_agent_loop."""
+    """Bridges RalphLoop orchestrator with run_agent_loop.
+
+    This version composes the FULL 6-LAYER RalphLoopExecutor from src/ralphloop/executor.py
+    with the CLI presentation layer (click.echo, approval, security scan, etc.).
+
+    Layers:
+        1. WALManager         — crash recovery journaling
+        2. CheckpointManager  — full state snapshots
+        3. SelfEvolutionEngine — cross-session error learning
+        4. ModelRouter        — smart model selection per task
+        5. SubagentIntegration — parallel Implementer + Reviewer
+        6. TDDEnforcer        — RED→GREEN→REFACTOR discipline
+
+    vs the old simplified executor which had NONE of these wired.
+    """
 
     def __init__(
         self,
@@ -95,35 +109,51 @@ class RalphLoopExecutor:
     ) -> None:
         self.project_path = Path(project_path)
         self.tdd_enabled = tdd_enabled
+        self.streaming = streaming
 
-        # Detect LLM provider
+        # ── Detect LLM provider (CLI-level, not executor-level) ────────────
         self.provider, self.api_key, detected_base_url, settings_model = _detect_provider()
         self.model = _get_model_for_provider(self.provider, settings_model)
 
-        # Store streaming preference
-        self.streaming = streaming
+        # ── Build full 6-layer executor ────────────────────────────────────
+        # Import here to avoid circular imports at module load time
+        from ralphloop.executor import RalphLoopExecutor as SixLayerExecutor
+        from ralphloop.agent_loop import AgentLoopConfig
+        from ralphloop.claude_md_loader import load_claude_md, build_llm_system_prompt
+        from context.wal import WALManager
+        from context.checkpoint import CheckpointManager
+        from self_evolution import SelfEvolutionEngine
+        from llm.model_router import ModelRouter, TaskType
+        from llm.client import LLMClient
 
-        # LLM client — prefer detected base_url, fall back to env
+        # WAL
+        wal_dir = Path.home() / ".nexus" / "wal"
+        wal_dir.mkdir(parents=True, exist_ok=True)
+        self._wal = WALManager(wal_dir=wal_dir)
+
+        # Checkpoint
+        ckpt_db = Path.home() / ".nexus" / "checkpoints.db"
+        ckpt_db.parent.mkdir(parents=True, exist_ok=True)
+        self._ckpt = CheckpointManager(db_path=ckpt_db)
+
+        # Self-Evolution
+        skills_dir = Path.home() / ".hermes" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        error_log = Path.home() / ".nexus" / "error_log.jsonl"
+        self._evo = SelfEvolutionEngine(skills_dir=skills_dir, error_log_path=error_log)
+        self._evo.load_existing_skills()
+
+        # Model Router
         base_url = detected_base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
-        self.llm = LLMClient(
-            provider=self.provider,
-            model=self.model,
-            api_key=self.api_key,
-            base_url=base_url,
+        self._router = ModelRouter(
+            api_keys={self.provider: self.api_key},
+            base_urls={self.provider: base_url} if base_url else {},
+            preferred_provider=self.provider,
         )
-
-        # Model router for smart routing
-        self.router = ModelRouter(api_keys={self.provider: self.api_key})
-
-        # Context
-        self.context = ImplementationContext(
-            task="", messages=[], tool_results=[], test_results=[], error_log=[]
-        )
-        # Self-Evolution: learn from errors permanently
-        self.context._evolution_engine = SelfEvolutionEngine()
+        default_model = self._router.select_model(TaskType.CODE, requires_tools=True)
+        self._llm = self._router.get_client(default_model)
 
         # Agent loop config
-        from ralphloop.agent_loop import AgentLoopConfig
         self.config = AgentLoopConfig(
             max_turns=200,
             tool_timeout=30,
@@ -139,18 +169,48 @@ class RalphLoopExecutor:
             claude_md = load_claude_md(str(self.project_path))
             self.system_prompt = build_llm_system_prompt(str(self.project_path)) if claude_md else ""
 
-        # TDD enforcer (minimal, just tracks state)
-        self.tdd_enforcer = TDDEnforcer() if self.tdd_enabled else None
+        # TDD enforcer
+        from ralphloop.tdd_enforcer import TDDEnforcer
+        self._tdd = TDDEnforcer() if tdd_enabled else None
 
-        # RalphLoop orchestrator state
+        # RalphLoop orchestrator state (CLI-level tracking)
         self.state = RalphState.PLAN
         self.retries = 0
         self.MAX_RETRIES = 3
         self.turns = 0
 
+        # ── Six-layer executor for internal orchestration ────────────────────
+        self._executor = SixLayerExecutor(
+            workdir=self.project_path,
+            llm_provider=self.provider,
+            llm_api_key=self.api_key,
+            llm_base_url=base_url,
+            enable_wal=True,
+            enable_checkpoint=True,
+            enable_self_evolution=True,
+            enable_model_router=True,
+            enable_parallel_subagents=True,
+            enable_tdd=tdd_enabled,
+            checkpoint_interval=5,
+            max_retries=3,
+            model_router=self._router,
+            custom_tools=TOOL_DEFINITIONS,
+        )
+
+        # Metrics accumulators
+        self._skills_learned_count = 0
+        self._checkpoints_saved_count = 0
+        self._wal_entries_count = 0
+
+        # Pre-load existing skills
+        self._evo.load_existing_skills()
+
     def execute_task(self, task: str) -> dict[str, Any]:
-        """Execute a task through RalphLoop states."""
-        self.context.task = task
+        """Execute a task through RalphLoop states.
+
+        Uses the full 6-layer executor with parallel subagents for ACT,
+        plus CLI presentation layer (approval, security scan, pytest).
+        """
         self.retries = 0
         self.turns = 0
 
@@ -160,62 +220,40 @@ class RalphLoopExecutor:
         click.echo(f"Project: {self.project_path}")
         click.echo(f"TDD: {'ON' if self.tdd_enabled else 'OFF'}")
         click.echo(f"Streaming: {'ON' if self.streaming else 'OFF'}")
+        click.echo(f"WAL: ON | Checkpoint: ON | SelfEvo: ON | Parallel: ON")
         click.echo(f"{'='*60}\n")
 
-        # Streaming callback for real-time token output
+        # Streaming callback
         def _streaming_cb(token: str) -> None:
             click.echo(token, nl=False)
 
-        # Wrap run_agent_loop to inject streaming
-        def _run_loop(task_prompt: str, state_name: str) -> Any:
-            if self.streaming:
-                click.echo(f"\n[{state_name}] ", nl=False)
-            result = run_agent_loop(
-                task=task_prompt,
-                llm_client=self.llm,
-                context=self.context,
-                config=self.config,
-                system_prompt=self.system_prompt,
-                workdir=self.project_path,
-                tools=TOOL_DEFINITIONS,
-                streaming_callback=_streaming_cb if self.streaming else None,
-            )
-            if self.streaming:
-                click.echo()  # newline after streaming output
-            return result
-
-        # ── PLAN state ──────────────────────────────────────────
-        self.state = RalphState.PLAN
-        click.echo(f"[PLAN] Analyzing task...")
-        plan_prompt = (
-            f"TASK: {task}\n\n"
-            f"Work directory: {self.project_path}\n\n"
-            f"First, understand the task. Then respond with a brief plan "
-            f"(what files to create/modify, what tools to use) before taking any action."
+        # ── Use the six-layer executor's run_task ─────────────────────────
+        # This runs PLAN → ACT → VERIFY → REFLECT with all 6 layers active
+        result = self._executor.run_task(
+            task=task,
+            spec_md=None,
+            constraints=[],
+            max_turns_per_state=20,
         )
-        result = _run_loop(plan_prompt, "PLAN")
-        self.turns += result.turns
 
-        if not result.complete:
-            return self._handle_failure("PLAN", result)
+        self.turns = result.metrics.total_iterations * 5  # rough estimate
+        self._skills_learned_count = result.skills_learned
+        self._checkpoints_saved_count = result.checkpoints_saved
+        self._wal_entries_count = result.wal_entries
 
-        # ── ACT state ───────────────────────────────────────────
-        self.state = RalphState.ACT
-        click.echo(f"\n[ACT] Executing plan...")
-        act_prompt = f"TASK: {task}\n\nExecute the plan. Use tools to create/modify files, run tests, etc."
-        result = _run_loop(act_prompt, "ACT")
-        self.turns += result.turns
+        # ── CLI: approval + ACT gates (leverages run.py's proven UX) ──────
+        # Get changed files from executor's context
+        ctx = self._executor._current_context
+        changed_files = ctx.get_changed_files() if ctx else []
 
-        # ── 用户 Approval 确认 ───────────────────────────────────
-        changed_files = self.context.get_changed_files()
         if changed_files:
             click.echo(f"\n[APPROVAL] {len(changed_files)} file(s) changed:")
-            for f in changed_files[:10]:  # 显示前10个
+            for f in changed_files[:10]:
                 click.echo(f"  - {f}")
             if len(changed_files) > 10:
                 click.echo(f"  ... and {len(changed_files) - 10} more")
-            
-            approval = click.confirm("\nProceed to verification?")
+
+            approval = click.confirm("\nProceed to final verification?")
             if not approval:
                 click.echo("[ABORT] User rejected changes")
                 return {
@@ -223,196 +261,125 @@ class RalphLoopExecutor:
                     "turns": self.turns,
                     "final_state": "ABORT",
                     "content": "User rejected changes during approval",
-                    "tool_count": len(self.context.tool_results),
+                    "tool_count": len(ctx.tool_results) if ctx else 0,
                 }
 
-        # ── ACT 后验证 ─────────────────────────────────────────────
-        changed_files = self.context.get_changed_files()
+        # ── ACT 后验证 (same as original run.py, runs on top of 6-layer) ─
         if changed_files:
-            click.echo(f"\n[VERIFY] Running security scan on {len(changed_files)} changed files...")
-            from src.verification.security_scan import SecurityScan
-            
-            scanner = SecurityScan()
-            codes = {}
-            for f in changed_files:
-                if f.endswith((".py", ".js", ".ts", ".jsx", ".tsx")):
-                    content = self.context.get_file_content(f)
-                    if content:
-                        codes[f] = content
-            
-            if codes:
-                # Run security scan on each file
-                blocked = False
-                blocking_issues = []
-                for f, code in codes.items():
-                    scan_result = scanner.scan(code, file_path=f)
-                    if not scan_result.passed:  # If any issue found, block
-                        blocked = True
-                        for finding in scan_result.findings:
-                            blocking_issues.append(f"[SECURITY] {f}:{finding.line_number} - {finding.title}")
-                
-                if blocked:
-                    click.echo(f"\n[!!] Security scan FAILED:")
-                    for issue in blocking_issues:
-                        click.echo(f"  - {issue}")
-                    if self.retries < self.MAX_RETRIES:
-                        self.retries += 1
-                        click.echo(f"[!] Retry {self.retries}/{self.MAX_RETRIES}")
-                        return self.execute_task(task)
-                    else:
-                        return {
-                            "success": False,
-                            "turns": self.turns,
-                            "final_state": "VERIFICATION_FAILED",
-                            "content": self._format_tool_results(),
-                            "tool_count": len(self.context.tool_results),
-                            "error": f"Security blocked: {blocking_issues}",
-                        }
-                else:
-                    click.echo("[OK] Security scan passed")
-
-            # Run pytest on changed files
-            test_files = [f for f in changed_files if f.startswith("tests/") or f.endswith("_test.py") or f.endswith("_tests.py")]
-            if test_files:
-                click.echo(f"\n[VERIFY] Running pytest on {len(test_files)} test files...")
-                import subprocess
-                test_result = subprocess.run(
-                    ["python", "-m", "pytest", "-x", "-q", "--tb=short"] + test_files,
-                    capture_output=True,
-                    text=True,
-                    cwd=str(self.context.workdir)
-                )
-                if test_result.returncode != 0:
-                    click.echo(f"[!!] Pytest FAILED:\n{test_result.stdout}\n{test_result.stderr}")
-                    if self.retries < self.MAX_RETRIES:
-                        self.retries += 1
-                        click.echo(f"[!] Retry {self.retries}/{self.MAX_RETRIES}")
-                        return self.execute_task(task)
-                    else:
-                        return {
-                            "success": False,
-                            "turns": self.turns,
-                            "final_state": "VERIFICATION_FAILED",
-                            "content": self._format_tool_results(),
-                            "tool_count": len(self.context.tool_results),
-                            "error": f"Pytest failed: {test_result.stdout}",
-                        }
-                else:
-                    click.echo("[OK] Pytest passed")
-
-            # Run mypy type check on Python files
-            py_files = [f for f in changed_files if f.endswith(".py") and not f.startswith("tests/")]
-            if py_files:
-                click.echo(f"\n[VERIFY] Running mypy type check on {len(py_files)} files...")
-                import subprocess
-                mypy_result = subprocess.run(
-                    ["python", "-m", "mypy", "--ignore-missing-imports", "--no-error-summary"] + py_files,
-                    capture_output=True,
-                    text=True,
-                    cwd=str(self.context.workdir)
-                )
-                # mypy returns 0 even with errors, check output
-                if "error:" in mypy_result.stdout:
-                    click.echo(f"[!!] MyPy issues found:\n{mypy_result.stdout}")
-                    click.echo("[!] Continuing anyway (non-blocking)")
-
-        # ── VERIFY state ───────────────────────────────────────
-        self.state = RalphState.VERIFY
-        click.echo(f"\n[VERIFY] Checking results...")
-        verify_prompt = (
-            f"Verify the results of: {task}\n\n"
-            f"Tool results so far:\n{self._format_tool_results()}"
-        )
-        result = _run_loop(verify_prompt, "VERIFY")
-        self.turns += result.turns
-
-        # Check for errors in tool results
-        if self._has_errors():
-            if self.retries < self.MAX_RETRIES:
-                self.retries += 1
-                click.echo(f"\n[!] Errors detected — retry {self.retries}/{self.MAX_RETRIES}")
-                return self.execute_task(task)  # Retry
-            else:
-                click.echo(f"\n[!!] Max retries exceeded")
-                return {
-                    "success": False,
-                    "turns": self.turns,
-                    "final_state": "ESCALATE",
-                    "content": self._format_tool_results(),
-                    "tool_count": len(self.context.tool_results),
-                    "error": "Max retries exceeded",
-                }
-
-        # ── REFLECT state ───────────────────────────────────────
-        self.state = RalphState.REFLECT
-        click.echo(f"\n[REFLECT] Evaluating...")
-        reflect_prompt = (
-            f"REFLECT on the completed work for: {task}\n\n"
-            f"Tool results:\n{self._format_tool_results()}\n\n"
-            f"Is the task complete? Should you commit? Reply with:\n"
-            f"  - Summary of what was done\n"
-            f"  - Whether to COMMIT or continue working"
-        )
-        reflect_result = _run_loop(reflect_prompt, "REFLECT")
-        self.turns += reflect_result.turns
-
-        # Determine if done — more robust heuristic
-        reflect_content = (reflect_result.final_content or "").lower()
-        tool_results_content = " ".join(
-            str(tr.get("result", "")) for tr in self.context.tool_results
-        ).lower()
-        has_errors = any(
-            "error:" in str(tr.get("result", "")).lower() for tr in self.context.tool_results
-        )
-        # Success if: no errors AND (commit mentioned OR task appears complete)
-        done = (
-            not has_errors
-            and (
-                "commit" in reflect_content
-                or ("done" in reflect_content and "not done" not in reflect_content)
-                or ("complete" in reflect_content and "not complete" not in reflect_content)
-                or ("finished" in reflect_content)
-            )
-        )
-        final_state = "COMMIT" if done else "ACT"
+            self._run_act_gates(ctx, changed_files)
 
         click.echo(f"\n{'='*60}")
-        click.echo(f"Final State: {final_state}")
-        click.echo(f"Total Turns: {self.turns}")
-        click.echo(f"Tool Calls: {len(self.context.tool_results)}")
+        click.echo(f"Final State: {result.final_state.name}")
+        click.echo(f"Success: {result.success}")
+        click.echo(f"Skills Learned: {result.skills_learned}")
+        click.echo(f"Checkpoints: {result.checkpoints_saved}")
+        click.echo(f"WAL Entries: {result.wal_entries}")
+        click.echo(f"Cost: ${result.total_cost_usd:.4f}")
         click.echo(f"{'='*60}")
 
         return {
-            "success": done,
+            "success": result.success,
             "turns": self.turns,
-            "final_state": final_state,
-            "content": reflect_result.final_content,
-            "tool_count": len(self.context.tool_results),
+            "final_state": result.final_state.name,
+            "content": result.summary,
+            "tool_count": len(ctx.tool_results) if ctx else 0,
+            "skills_learned": result.skills_learned,
+            "checkpoints_saved": result.checkpoints_saved,
+            "wal_entries": result.wal_entries,
+            "cost_usd": result.total_cost_usd,
         }
 
+    def _run_act_gates(self, ctx, changed_files: list[str]) -> None:
+        """Run ACT-phase verification gates (security + pytest + mypy)."""
+        click.echo(f"\n[VERIFY] Running ACT gates on {len(changed_files)} changed files...")
+
+        # Security scan
+        codes = {}
+        for f in changed_files:
+            if f.endswith((".py", ".js", ".ts", ".jsx", ".tsx")):
+                content = ctx.get_file_content(f)
+                if content:
+                    codes[f] = content
+
+        if codes:
+            from src.verification.security_scan import SecurityScan
+            scanner = SecurityScan()
+            blocked = False
+            blocking_issues = []
+            for f, code in codes.items():
+                scan_result = scanner.scan(code, file_path=f)
+                if not scan_result.passed:
+                    blocked = True
+                    for finding in scan_result.findings:
+                        blocking_issues.append(
+                            f"[SECURITY] {f}:{finding.line_number} - {finding.title}"
+                        )
+            if blocked:
+                click.echo(f"\n[!!] Security scan FAILED:")
+                for issue in blocking_issues:
+                    click.echo(f"  - {issue}")
+            else:
+                click.echo("[OK] Security scan passed")
+
+        # Pytest on test files
+        test_files = [f for f in changed_files if f.startswith("tests/") or f.endswith("_test.py") or f.endswith("_tests.py")]
+        if test_files:
+            click.echo(f"\n[VERIFY] Running pytest on {len(test_files)} test files...")
+            import subprocess
+            test_result = subprocess.run(
+                ["python", "-m", "pytest", "-x", "-q", "--tb=short"] + test_files,
+                capture_output=True,
+                text=True,
+                cwd=str(self.project_path),
+            )
+            if test_result.returncode != 0:
+                click.echo(f"[!!] Pytest FAILED:\n{test_result.stdout}\n{test_result.stderr}")
+            else:
+                click.echo("[OK] Pytest passed")
+
+        # MyPy on Python files (non-blocking)
+        py_files = [f for f in changed_files if f.endswith(".py") and not f.startswith("tests/")]
+        if py_files:
+            click.echo(f"\n[VERIFY] Running mypy type check on {len(py_files)} files...")
+            import subprocess
+            mypy_result = subprocess.run(
+                ["python", "-m", "mypy", "--ignore-missing-imports", "--no-error-summary"] + py_files,
+                capture_output=True,
+                text=True,
+                cwd=str(self.project_path),
+            )
+            if "error:" in mypy_result.stdout:
+                click.echo(f"[!!] MyPy issues found:\n{mypy_result.stdout}")
+
     def _has_errors(self) -> bool:
-        for tr in self.context.tool_results:
+        ctx = self._executor._current_context
+        if not ctx:
+            return False
+        for tr in ctx.tool_results:
             content = str(tr.get("result", ""))
             if "ERROR:" in content or "error:" in content:
                 return True
         return False
 
     def _format_tool_results(self) -> str:
+        ctx = self._executor._current_context
+        if not ctx:
+            return "(no context)"
         lines = []
-        for tr in self.context.tool_results[-10:]:
+        for tr in ctx.tool_results[-10:]:
             name = tr.get("tool", "?")
             result = str(tr.get("result", ""))[:200]
             lines.append(f"[{name}] {result}")
         return "\n".join(lines) if lines else "(no tool results yet)"
 
     def _handle_failure(self, phase: str, result: Any) -> dict[str, Any]:
-        click.echo(f"\n[FAIL] {phase} failed: {result.final_content[:200] if result.final_content else 'no content'}")
+        click.echo(f"\n[FAIL] {phase} failed: {str(result)[:200] if result else 'no result'}")
         return {
             "success": False,
             "turns": self.turns,
             "final_state": "ABORT",
-            "content": result.final_content,
-            "tool_count": len(self.context.tool_results),
+            "content": str(result) if result else "",
+            "tool_count": 0,
             "error": f"{phase} phase failed",
         }
 

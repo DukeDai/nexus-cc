@@ -45,11 +45,12 @@ from .subagent_integration import (
     OrchestratedResult,
 )
 from .tdd_enforcer import TDDEnforcer, TDDCycle, TDDPhase
-from ..context.wal import WALManager, WALEntry
-from ..context.checkpoint import CheckpointManager
-from ..self_evolution.engine import SelfEvolutionEngine, LearnedSkill
-from ..llm.model_router import ModelRouter, TaskType, Provider
-from ..llm.client import LLMClient
+# Absolute imports — these work when src/ is in sys.path (test_cli.py pattern)
+from context.wal import WALManager, WALEntry          # src/context/wal.py
+from context.checkpoint import CheckpointManager       # src/context/checkpoint.py
+from self_evolution.engine import SelfEvolutionEngine, LearnedSkill  # src/self_evolution/
+from llm.model_router import ModelRouter, TaskType, Provider         # src/llm/
+from llm.client import LLMClient                                          # src/llm/
 
 
 # ─── Result Types ─────────────────────────────────────────────────────────────
@@ -510,6 +511,7 @@ class RalphLoopExecutor:
             system_prompt=system_prompt,
             workdir=self.workdir,
             tools=self.custom_tools,
+            wal=self._wal,
         )
 
         # Track cost
@@ -612,6 +614,7 @@ class RalphLoopExecutor:
             system_prompt=system_prompt,
             workdir=self.workdir,
             tools=self.custom_tools,
+            wal=self._wal,
         )
 
         self._track_usage(model_name, result.turns)
