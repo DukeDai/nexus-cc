@@ -12,13 +12,10 @@ import click
 # NOTE: sys.path setup is in src/cli/main.py (loaded before this module)
 
 from ralphloop import RalphState
-from ralphloop.implementation_context import ImplementationContext
 from ralphloop.claude_md_loader import load_claude_md, build_llm_system_prompt
-from ralphloop.agent_loop import run_agent_loop, TOOL_DEFINITIONS
-from ralphloop.tdd_enforcer import TDDEnforcer
-from llm.client import LLMClient, Provider
-from llm.model_router import ModelRouter
-from self_evolution import SelfEvolutionEngine
+from ralphloop.agent_loop import TOOL_DEFINITIONS  # passed to executor
+from llm.client import Provider  # used by _detect_provider
+from self_evolution import SelfEvolutionEngine  # used for skills loading
 
 
 def _detect_provider() -> tuple[Provider, str, str, str]:
@@ -84,20 +81,13 @@ def _get_model_for_provider(provider: Provider, settings_model: str = "") -> str
 
 
 class RalphLoopExecutor:
-    """Bridges RalphLoop orchestrator with run_agent_loop.
+    """Thin CLI wrapper over src/ralphloop.executor.RalphLoopExecutor.
 
-    This version composes the FULL 6-LAYER RalphLoopExecutor from src/ralphloop/executor.py
-    with the CLI presentation layer (click.echo, approval, security scan, etc.).
+    Only adds CLI-specific presentation (approval, verification gates, output).
+    All 6-layer logic (WAL/Checkpoint/SelfEvo/ModelRouter/Subagents/TDD)
+    is delegated to the real executor — no duplication.
 
-    Layers:
-        1. WALManager         — crash recovery journaling
-        2. CheckpointManager  — full state snapshots
-        3. SelfEvolutionEngine — cross-session error learning
-        4. ModelRouter        — smart model selection per task
-        5. SubagentIntegration — parallel Implementer + Reviewer
-        6. TDDEnforcer        — RED→GREEN→REFACTOR discipline
-
-    vs the old simplified executor which had NONE of these wired.
+    vs the old run.py which re-implemented everything locally and got out of sync.
     """
 
     def __init__(
@@ -111,56 +101,10 @@ class RalphLoopExecutor:
         self.tdd_enabled = tdd_enabled
         self.streaming = streaming
 
-        # ── Detect LLM provider (CLI-level, not executor-level) ────────────
+        # Detect LLM provider (CLI-level auth only)
         self.provider, self.api_key, detected_base_url, settings_model = _detect_provider()
         self.model = _get_model_for_provider(self.provider, settings_model)
-
-        # ── Build full 6-layer executor ────────────────────────────────────
-        # Import here to avoid circular imports at module load time
-        from ralphloop.executor import RalphLoopExecutor as SixLayerExecutor
-        from ralphloop.agent_loop import AgentLoopConfig
-        from ralphloop.claude_md_loader import load_claude_md, build_llm_system_prompt
-        from context.wal import WALManager
-        from context.checkpoint import CheckpointManager
-        from self_evolution import SelfEvolutionEngine
-        from llm.model_router import ModelRouter, TaskType
-        from llm.client import LLMClient
-
-        # WAL
-        wal_dir = Path.home() / ".nexus" / "wal"
-        wal_dir.mkdir(parents=True, exist_ok=True)
-        self._wal = WALManager(wal_dir=wal_dir)
-
-        # Checkpoint
-        ckpt_db = Path.home() / ".nexus" / "checkpoints.db"
-        ckpt_db.parent.mkdir(parents=True, exist_ok=True)
-        self._ckpt = CheckpointManager(db_path=ckpt_db)
-
-        # Self-Evolution
-        skills_dir = Path.home() / ".hermes" / "skills"
-        skills_dir.mkdir(parents=True, exist_ok=True)
-        error_log = Path.home() / ".nexus" / "error_log.jsonl"
-        self._evo = SelfEvolutionEngine(skills_dir=skills_dir, error_log_path=error_log)
-        self._evo.load_existing_skills()
-
-        # Model Router
         base_url = detected_base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
-        self._router = ModelRouter(
-            api_keys={self.provider: self.api_key},
-            base_urls={self.provider: base_url} if base_url else {},
-            preferred_provider=self.provider,
-        )
-        default_model = self._router.select_model(TaskType.CODE, requires_tools=True)
-        self._llm = self._router.get_client(default_model)
-
-        # Agent loop config
-        self.config = AgentLoopConfig(
-            max_turns=200,
-            tool_timeout=30,
-            context_window=200_000,
-            stop_on_content=False,
-            streaming=streaming,
-        )
 
         # System prompt from CLAUDE.md
         if system_prompt:
@@ -169,17 +113,23 @@ class RalphLoopExecutor:
             claude_md = load_claude_md(str(self.project_path))
             self.system_prompt = build_llm_system_prompt(str(self.project_path)) if claude_md else ""
 
-        # TDD enforcer
-        from ralphloop.tdd_enforcer import TDDEnforcer
-        self._tdd = TDDEnforcer() if tdd_enabled else None
+        # Pre-load Self-Evolution skills (needed for CLI display metrics)
+        skills_dir = Path.home() / ".hermes" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        self._evo = SelfEvolutionEngine(skills_dir=skills_dir, error_log_path=Path.home() / ".nexus" / "error_log.jsonl")
+        self._evo.load_existing_skills()
 
-        # RalphLoop orchestrator state (CLI-level tracking)
-        self.state = RalphState.PLAN
-        self.retries = 0
-        self.MAX_RETRIES = 3
-        self.turns = 0
+        # Thin wrapper: real 6-layer executor
+        from ralphloop.executor import RalphLoopExecutor as SixLayerExecutor
+        from llm.model_router import ModelRouter, TaskType
 
-        # ── Six-layer executor for internal orchestration ────────────────────
+        # Build ModelRouter (same as CLI would use)
+        self._router = ModelRouter(
+            api_keys={self.provider: self.api_key},
+            base_urls={self.provider: base_url} if base_url else {},
+            preferred_provider=self.provider,
+        )
+
         self._executor = SixLayerExecutor(
             workdir=self.project_path,
             llm_provider=self.provider,
@@ -197,38 +147,23 @@ class RalphLoopExecutor:
             custom_tools=TOOL_DEFINITIONS,
         )
 
-        # Metrics accumulators
-        self._skills_learned_count = 0
-        self._checkpoints_saved_count = 0
-        self._wal_entries_count = 0
-
-        # Pre-load existing skills
-        self._evo.load_existing_skills()
+        # State tracking
+        self.state = RalphState.PLAN
+        self.turns = 0
 
     def execute_task(self, task: str) -> dict[str, Any]:
-        """Execute a task through RalphLoop states.
-
-        Uses the full 6-layer executor with parallel subagents for ACT,
-        plus CLI presentation layer (approval, security scan, pytest).
-        """
-        self.retries = 0
+        """Execute via 6-layer executor, then run CLI verification gates."""
         self.turns = 0
 
         click.echo(f"\n{'='*60}")
         click.echo(f"Nexus RalphLoop | Task: {task[:60]}")
         click.echo(f"Provider: {self.provider.value} | Model: {self.model}")
         click.echo(f"Project: {self.project_path}")
-        click.echo(f"TDD: {'ON' if self.tdd_enabled else 'OFF'}")
-        click.echo(f"Streaming: {'ON' if self.streaming else 'OFF'}")
+        click.echo(f"TDD: {'ON' if self.tdd_enabled else 'OFF'} | Streaming: {'ON' if self.streaming else 'OFF'}")
         click.echo(f"WAL: ON | Checkpoint: ON | SelfEvo: ON | Parallel: ON")
         click.echo(f"{'='*60}\n")
 
-        # Streaming callback
-        def _streaming_cb(token: str) -> None:
-            click.echo(token, nl=False)
-
-        # ── Use the six-layer executor's run_task ─────────────────────────
-        # This runs PLAN → ACT → VERIFY → REFLECT with all 6 layers active
+        # ── 6-layer execution ─────────────────────────────────────────────
         result = self._executor.run_task(
             task=task,
             spec_md=None,
@@ -236,13 +171,9 @@ class RalphLoopExecutor:
             max_turns_per_state=20,
         )
 
-        self.turns = result.metrics.total_iterations * 5  # rough estimate
-        self._skills_learned_count = result.skills_learned
-        self._checkpoints_saved_count = result.checkpoints_saved
-        self._wal_entries_count = result.wal_entries
+        self.turns = result.metrics.total_iterations * 5
 
-        # ── CLI: approval + ACT gates (leverages run.py's proven UX) ──────
-        # Get changed files from executor's context
+        # ── CLI: approval + verification gates ───────────────────────────
         ctx = self._executor._current_context
         changed_files = ctx.get_changed_files() if ctx else []
 
@@ -264,10 +195,11 @@ class RalphLoopExecutor:
                     "tool_count": len(ctx.tool_results) if ctx else 0,
                 }
 
-        # ── ACT 后验证 (same as original run.py, runs on top of 6-layer) ─
+        # Post-ACT verification gates (security + pytest + mypy)
         if changed_files:
             self._run_act_gates(ctx, changed_files)
 
+        # Final report
         click.echo(f"\n{'='*60}")
         click.echo(f"Final State: {result.final_state.name}")
         click.echo(f"Success: {result.success}")
@@ -290,7 +222,7 @@ class RalphLoopExecutor:
         }
 
     def _run_act_gates(self, ctx, changed_files: list[str]) -> None:
-        """Run ACT-phase verification gates (security + pytest + mypy)."""
+        """Run ACT-phase verification gates: security + pytest + mypy."""
         click.echo(f"\n[VERIFY] Running ACT gates on {len(changed_files)} changed files...")
 
         # Security scan
@@ -302,7 +234,7 @@ class RalphLoopExecutor:
                     codes[f] = content
 
         if codes:
-            from src.verification.security_scan import SecurityScan
+            from verification.security_scan import SecurityScan
             scanner = SecurityScan()
             blocked = False
             blocking_issues = []
@@ -311,9 +243,7 @@ class RalphLoopExecutor:
                 if not scan_result.passed:
                     blocked = True
                     for finding in scan_result.findings:
-                        blocking_issues.append(
-                            f"[SECURITY] {f}:{finding.line_number} - {finding.title}"
-                        )
+                        blocking_issues.append(f"[SECURITY] {f}:{finding.line_number} - {finding.title}")
             if blocked:
                 click.echo(f"\n[!!] Security scan FAILED:")
                 for issue in blocking_issues:
@@ -350,38 +280,6 @@ class RalphLoopExecutor:
             )
             if "error:" in mypy_result.stdout:
                 click.echo(f"[!!] MyPy issues found:\n{mypy_result.stdout}")
-
-    def _has_errors(self) -> bool:
-        ctx = self._executor._current_context
-        if not ctx:
-            return False
-        for tr in ctx.tool_results:
-            content = str(tr.get("result", ""))
-            if "ERROR:" in content or "error:" in content:
-                return True
-        return False
-
-    def _format_tool_results(self) -> str:
-        ctx = self._executor._current_context
-        if not ctx:
-            return "(no context)"
-        lines = []
-        for tr in ctx.tool_results[-10:]:
-            name = tr.get("tool", "?")
-            result = str(tr.get("result", ""))[:200]
-            lines.append(f"[{name}] {result}")
-        return "\n".join(lines) if lines else "(no tool results yet)"
-
-    def _handle_failure(self, phase: str, result: Any) -> dict[str, Any]:
-        click.echo(f"\n[FAIL] {phase} failed: {str(result)[:200] if result else 'no result'}")
-        return {
-            "success": False,
-            "turns": self.turns,
-            "final_state": "ABORT",
-            "content": str(result) if result else "",
-            "tool_count": 0,
-            "error": f"{phase} phase failed",
-        }
 
 
 @click.command()

@@ -17,7 +17,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from src.ralphloop.states import RalphState
+from ralphloop.states import RalphState
 
 
 class MCPBridgePhase(Enum):
