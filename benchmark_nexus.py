@@ -557,8 +557,8 @@ def bench_tool_registry_dynamic():
     registry = ToolRegistry()
     registry.register_all(package_name="nexus.tools")
     tools = registry.list_tools()
-    record("ToolRegistry", "Auto-discovers tools", len(tools) >= 0, "bool",
-           f"Auto-discovery works (found {len(tools)} tools, may be 0 if package absent)")
+    record("ToolRegistry", "Auto-discovers tools", len(tools) >= 1, "bool",
+           f"Auto-discovery works (found {len(tools)} tools: {tools})")
 
     # Test 4: definitions() returns Anthropic-format list
     defs = registry.definitions()

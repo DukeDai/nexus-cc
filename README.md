@@ -8,7 +8,7 @@ Nexus 是基于 **RalphLoop 状态机** 的 AI 编程智能体，通过显式状
 
 ## 核心创新
 
-> **状态 (2026-05-09):** 本次进化新增：TDD Loop 内联 ACT、REFLECT 增强分析、total_turns 量化追踪、ModelRouter 无key fallback。**63/63 benchmark 全绿。**
+> **状态 (2026-05-10):** 本次进化：SelfEvo success capture、metrics 全暴露、get_all_skills API、nexus.tools 动态发现、P0 checkpoint 重放漏洞修复。**63/63 benchmark 全绿，43/43 测试全绿。**
 
 | 特性 | Claude Code | Nexus | 状态 |
 |------|------------|-------|------|
@@ -246,13 +246,12 @@ directory/.CLAUDE.typo     ← 目录规范（模块规则、local overrides）
 - [x] 异常处理改进 — 无 `except: pass`
 - [x] WAL crash recovery — WALManager 日志化 + 恢复计划生成
 
-**本次进化 (2026-05-09)**
-- [x] TDD Loop 内联 ACT（`_run_tdd_loop_if_enabled()` 后置 RED→GREEN→REFACTOR）
-- [x] REFLECT 增强（接收 `act_result` dict，含 `tdd_result`/`pipeline_warnings`/`skills_applied`）
-- [x] Metrics 量化（`RalphLoopMetrics.total_turns/llm_calls/tool_calls`，`ExecutorResult.to_dict()` 暴露）
-- [x] ModelRouter 无 API key fallback（支持 Ollama 等本地模型，`$0.0` 成本估算）
+**本次进化 (2026-05-10)**
 - [x] SelfEvo success capture（`analyze_and_capture_success()` 成功模式存储为 LearnedSkill）
 - [x] `get_all_skills()` public API（`SelfEvolutionEngine.get_all_skills()` 替代私有 `_skills_cache` 访问）
+- [x] `ExecutorResult.to_dict()` metrics 暴露（`total_turns`/`total_llm_calls`/`total_tool_calls`/`total_cost_usd`）
+- [x] `nexus.tools` 动态发现（`register_all()` 实现 Protocol 兼容性修复，Python 3.12 下 `issubclass` 对 data member Protocol 报错，改用 `hasattr` 检测）
+- [x] `FileSearchTool` 真实工具（`nexus/tools/file_search.py`，`ToolRegistry` 自动注册并可调用）
 - [x] `load_existing_skills()` 启动时加载（executor init 时调用，从 `~/.hermes/skills/*.md` 加载到 cache）
 - [x] README 核心创新表格更新（TDD 特性从 "prompt-based" 改为 "ACT 内联"，benchmark 59→63）
 

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    pass
 
 
 class ToolResult:
@@ -70,23 +72,56 @@ class ToolRegistry:
         """Auto-discover and register all tools in a package.
 
         Traverses the given package and registers any subclass of BaseTool.
+        Supports both installed packages (nexus.tools) and dev mode (nexus/tools/).
         """
-        try:
-            package = importlib.import_module(package_name)
-        except ImportError:
-            # No tools package yet
+        package = None
+        # Try the canonical package name first
+        for candidate in [package_name, "nexus.tools", "src.tools"]:
+            try:
+                package = importlib.import_module(candidate)
+                break
+            except ImportError:
+                continue
+
+        # Fallback: try finding nexus.tools via project roots
+        if package is None:
+            for root in [Path.cwd(), Path(__file__).parent.parent.parent]:
+                if not str(root) in sys.path:
+                    sys.path.insert(0, str(root))
+                try:
+                    package = importlib.import_module(package_name)
+                    break
+                except ImportError:
+                    continue
+                finally:
+                    if str(root) in sys.path:
+                        sys.path.remove(str(root))
+
+        if package is None:
             return
 
-        for _importer, mod_name, _ispkg in pkgutil.iter_modules(package.__path__):
-            module = importlib.import_module(f"{package_name}.{mod_name}")
+        # Discover sub-modules via pkgutil
+        try:
+            module_infos = list(pkgutil.iter_modules(package.__path__))
+        except (AttributeError, TypeError):
+            return
+
+        for mod_info in module_infos:
+            try:
+                module = importlib.import_module(f"{package.__name__}.{mod_info.name}")
+            except ImportError:
+                continue
             for attr_name in dir(module):
                 attr = getattr(module, attr_name)
-                if (
-                    isinstance(attr, type)
-                    and issubclass(attr, BaseTool)
-                    and attr is not BaseTool
-                ):
-                    self.register(attr())
+                # Detect tools by checking for the protocol attributes (name + description).
+                # issubclass() is unreliable with Protocol + data members on Python 3.12.
+                if isinstance(attr, type) and hasattr(attr, "name") and hasattr(attr, "description") and getattr(attr, "name", None):
+                    try:
+                        instance = attr()
+                        if instance.name:
+                            self.register(instance)
+                    except Exception:
+                        pass
 
     # -------------------------------------------------------------------------
     # Access
