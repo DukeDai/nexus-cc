@@ -14,6 +14,9 @@ class RalphState(Enum):
     Each state has explicit entry/exit semantics enforced by guards.
     """
 
+    DECOMPOSE = auto()
+    """Decomposition phase: break down complex tasks into subtasks (P6)."""
+
     PLAN = auto()
     """Planning phase: understand requirements, write spec."""
 
