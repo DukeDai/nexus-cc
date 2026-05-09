@@ -482,14 +482,22 @@ class RalphLoopExecutor:
 
         # Log WAL: task start
         if self._wal:
+            # Log the decomposition transition if triggered
+            complexity = self._classify_task_complexity(task)
+            to_state = "DECOMPOSE" if complexity != TaskComplexity.SIMPLE else "PLAN"
             self._wal.log_transition(
                 from_state="INIT",
-                to_state="PLAN",
+                to_state=to_state,
                 trigger=f"task_start:{task_id}",
             )
             self._wal_entries_count += 2
 
-        # Run the RalphLoop
+        # P6: Pre-check complexity and execute DECOMPOSE phase if needed.
+        # This runs BEFORE orchestrator.run() so the task_queue is
+        # already populated with subtasks when the state machine starts.
+        self._execute_decompose_phase(orchestrator, task, spec_md, constraints)
+
+        # Run the RalphLoop (task_queue may now have multiple subtasks)
         result = orchestrator.run()
 
         # Final checkpoint on success or failure
