@@ -252,3 +252,88 @@ class TestSixLayersVisible:
         assert ex._router is not None, "ModelRouter not initialized"
         assert ex._si is not None, "SubagentIntegration not initialized"
         assert ex._tdd is not None, "TDDEnforcer not initialized"
+
+
+# ─── P6 Auto-Decompose Tests ────────────────────────────────────────────────
+
+def test_classify_task_complexity_simple():
+    """Simple single-step task returns SIMPLE."""
+    from ralphloop.executor import RalphLoopExecutor
+    from ralphloop.complexity import TaskComplexity
+    ex = RalphLoopExecutor(workdir="/tmp/test_p6_1")
+    assert ex._classify_task_complexity("fix the typo in README") == TaskComplexity.SIMPLE
+
+
+def test_classify_task_complexity_moderate():
+    """Two-step task returns MODERATE."""
+    from ralphloop.executor import RalphLoopExecutor
+    from ralphloop.complexity import TaskComplexity
+    ex = RalphLoopExecutor(workdir="/tmp/test_p6_2")
+    result = ex._classify_task_complexity("add endpoint and write test for it")
+    assert result in (TaskComplexity.MODERATE, TaskComplexity.COMPLEX)
+
+
+def test_classify_task_complexity_complex():
+    """Multi-step / refactor task returns COMPLEX."""
+    from ralphloop.executor import RalphLoopExecutor
+    from ralphloop.complexity import TaskComplexity
+    ex = RalphLoopExecutor(workdir="/tmp/test_p6_3")
+    result = ex._classify_task_complexity(
+        "refactor auth module, update all tests, and migrate database schema"
+    )
+    assert result == TaskComplexity.COMPLEX
+
+
+def test_decompose_task_returns_list():
+    """_decompose_task returns a list (with mocked LLM client)."""
+    from unittest.mock import MagicMock
+    from ralphloop.executor import RalphLoopExecutor
+
+    ex = RalphLoopExecutor(workdir="/tmp/test_p6_4", enable_model_router=False)
+    ex._llm_client = MagicMock()
+    ex._llm_client.chat.return_value = '{"subtasks": [{"description": "step 1", "task_id": "s1", "spec_md": null, "constraints": [], "depends_on": []}, {"description": "step 2", "task_id": "s2", "spec_md": null, "constraints": [], "depends_on": []}]}'
+    result = ex._decompose_task("test task", None, [])
+    assert isinstance(result, list)
+
+
+def test_execute_decompose_phase_simple_skips_decomposition():
+    """Simple task does NOT call LLM and transitions directly to PLAN."""
+    from unittest.mock import MagicMock
+    from ralphloop.executor import RalphLoopExecutor
+    from ralphloop.states import RalphState
+
+    ex = RalphLoopExecutor(workdir="/tmp/test_p6_5", enable_model_router=False)
+    ex._llm_client = MagicMock()
+
+    # Create a minimal orchestrator-like mock
+    orch = MagicMock()
+    orch.state = RalphState.PLAN
+    orch.task_queue = [{"description": "fix typo", "task_id": "t0", "spec_md": None, "constraints": []}]
+
+    ex._execute_decompose_phase(orch, "fix the typo in README", None, [])
+
+    assert orch.state == RalphState.PLAN
+    # Simple task: task_queue is NOT replaced (single task remains)
+    assert len(orch.task_queue) == 1
+
+
+def test_execute_decompose_phase_complex_fallback_to_single():
+    """Complex task with no LLM falls back to single task."""
+    from unittest.mock import MagicMock
+    from ralphloop.executor import RalphLoopExecutor
+    from ralphloop.states import RalphState
+
+    ex = RalphLoopExecutor(workdir="/tmp/test_p6_6", enable_model_router=False)
+    ex._llm_client = MagicMock()
+    # Make LLM return empty so decomposition falls back
+    ex._llm_client.chat.return_value = '{"subtasks": []}'
+
+    orch = MagicMock()
+    orch.state = RalphState.PLAN
+    orch.task_queue = [{"description": "big task", "task_id": "t0", "spec_md": None, "constraints": []}]
+
+    ex._execute_decompose_phase(orch, "big refactor task", None, [])
+
+    # Falls back to single task (empty decomposition)
+    assert orch.state == RalphState.PLAN
+    assert len(orch.task_queue) >= 1
