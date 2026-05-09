@@ -36,6 +36,7 @@ class TransitionTrigger(Enum):
     ALL_TASKS_COMPLETE = auto()
     CONTEXT_BUDGET_POOR = auto()
     USER_ESCALATION_RESPONSE = auto()
+    DECOMPOSE_COMPLETE = auto()   # P6: complex task decomposed into subtasks
 
 
 @dataclass(frozen=True)
@@ -198,6 +199,33 @@ def _build_transition_table() -> list[Transition]:
             trigger=TransitionTrigger.USER_ESCALATION_RESPONSE,
             guard=escalation_resolved,
             description="Escalation resolved with abandon, commit"
+        ),
+
+        # DECOMPOSE → PLAN: Decomposition complete, proceed to planning
+        Transition(
+            from_state=RalphState.DECOMPOSE,
+            to_state=RalphState.PLAN,
+            trigger=TransitionTrigger.DECOMPOSE_COMPLETE,
+            guard=context_not_poor,
+            description="Decomposition complete, proceed to plan"
+        ),
+
+        # DECOMPOSE → PLAN: User selected to retry after decompose failure
+        Transition(
+            from_state=RalphState.DECOMPOSE,
+            to_state=RalphState.PLAN,
+            trigger=TransitionTrigger.USER_ESCALATION_RESPONSE,
+            guard=escalation_resolved,
+            description="Escalation resolved, restart plan"
+        ),
+
+        # DECOMPOSE → ABORT: Context budget POOR
+        Transition(
+            from_state=RalphState.DECOMPOSE,
+            to_state=RalphState.ABORT,
+            trigger=TransitionTrigger.CONTEXT_BUDGET_POOR,
+            guard=context_poor,
+            description="Context budget POOR, abort"
         ),
 
         # Any → ABORT: Context budget POOR
