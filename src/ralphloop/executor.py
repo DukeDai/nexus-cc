@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -45,6 +46,7 @@ from .subagent_integration import (
     OrchestratedResult,
 )
 from .tdd_enforcer import TDDEnforcer, TDDCycle, TDDPhase
+from .complexity import TaskComplexity, classify_complexity
 # Absolute imports — these work when src/ is in sys.path (test_cli.py pattern)
 from context.wal import WALManager, WALEntry          # src/context/wal.py
 from context.checkpoint import CheckpointManager       # src/context/checkpoint.py
@@ -338,6 +340,48 @@ class RalphLoopExecutor:
 
     # ─── Self-Evolution: Proactive Skill Injection ─────────────────────────
 
+    def _get_success_hints(self, task_context: str) -> str:
+        """Build a hint prompt from previously successful patterns for this type of task.
+
+        Unlike recovery (which is reactive to errors), success hints are PROACTIVE:
+        before planning, we query skills for similar successful completions and
+        inject those patterns so the planner can apply proven approaches.
+        """
+        if not self._evo or not task_context:
+            return ""
+
+        all_skills = self._evo.get_all_skills()
+        if not all_skills:
+            return ""
+
+        # Find skills whose trigger matches the task context
+        matching = []
+        for skill in all_skills:
+            trigger = skill.trigger
+            if not trigger:
+                continue
+            # Check if this task context is similar to the skill's trigger
+            # (success skills use task context as trigger, error skills use error pattern)
+            if "success" in skill.name.lower() or (
+                len(trigger) > 10 and trigger.lower() in task_context.lower()
+            ):
+                matching.append(skill)
+
+        if not matching:
+            return ""
+
+        lines = [
+            "\n\n## Previously Successful Approaches (Nexus Self-Evolution)\n",
+            "For similar tasks completed successfully in the past, here are verified approaches:\n",
+        ]
+        for skill in matching[:3]:
+            lines.append(f"### Approach for: `{skill.trigger[:60]}`")
+            for step in skill.recovery_steps[:3]:
+                lines.append(f"  - {step}")
+            lines.append("")
+
+        return "\n".join(lines)
+
     def _get_recovery_prompt(self) -> str:
         """Build recovery prompt from previously learned skills.
 
@@ -611,6 +655,13 @@ class RalphLoopExecutor:
             except Exception as e:
                 # MCP bridge failure is non-fatal — proceed with LLM-only planning
                 pass
+
+        # ── P7: Proactive success hints ─────────────────────────────────
+        # Before planning, query SelfEvo for similar successful task patterns
+        # and inject them so the planner can apply proven approaches proactively.
+        success_hints = self._get_success_hints(task)
+        if success_hints:
+            system_prompt += success_hints
 
         result = run_agent_loop(
             task=f"Analyze and plan: {task}",
@@ -962,6 +1013,129 @@ class RalphLoopExecutor:
             return TaskType.FAST
         return TaskType.CODE  # Default to code
 
+    # ─── P6: Auto-Decomposition ────────────────────────────────────────────────
+
+    def _classify_task_complexity(self, task: str) -> TaskComplexity:
+        """Classify task complexity using heuristic signals.
+
+        This is a fast pre-check (no LLM call) to decide whether
+        a task needs decomposition before entering RalphLoop.
+        """
+        return classify_complexity(task)
+
+    def _decompose_task(
+        self,
+        task: str,
+        spec_md: str | None,
+        constraints: list[str],
+    ) -> list[dict[str, Any]]:
+        """Decompose a complex task into an ordered list of subtasks.
+
+        Uses an LLM call to generate a structured decomposition with
+        dependency information. Each subtask dict has keys:
+          - description: str
+          - task_id: str
+          - spec_md: str | None
+          - constraints: list[str]
+          - depends_on: list[str]  (task_ids this subtask waits for)
+
+        Returns an empty list if decomposition fails or task is simple.
+        """
+        if not self._llm_client:
+            return []
+
+        prompt = (
+            "You are a task decomposition expert. Given the following task,\n"
+            "break it into 2-8 independent, focused subtasks that can be\n"
+            "executed in order. For each subtask, note any dependencies\n"
+            "(other subtask IDs it depends on).\n\n"
+            f"Task: {task}\n\n"
+            "Respond ONLY with valid JSON in this exact format:\n"
+            "{\n"
+            '  "subtasks": [\n'
+            '    {"id": "t1", "description": "...", "depends_on": []},\n'
+            '    {"id": "t2", "description": "...", "depends_on": ["t1"]}\n'
+            "  ]\n"
+            "}\n\n"
+            "Rules:\n"
+            "- Each subtask should be independently verifiable\n"
+            "- Maximum 8 subtasks\n"
+            "- Use simple IDs: t1, t2, t3 ...\n"
+            "- depends_on is a list of task IDs (empty if no dependencies)\n"
+            "- If the task is already simple enough, return a single subtask\n"
+        )
+        if spec_md:
+            prompt += f"\n\nSPEC.md:\n{spec_md[:2000]}"
+
+        try:
+            response = self._llm_client.complete(prompt, max_tokens=1024)
+            # Try to extract JSON from response
+            match = re.search(r'\{[\s\S]+\}', response)
+            if not match:
+                return []
+            data = json.loads(match.group())
+            subtasks = data.get("subtasks", [])
+            result = []
+            for s in subtasks:
+                result.append({
+                    "description": s["description"],
+                    "task_id": s.get("id", str(uuid.uuid4())[:8]),
+                    "spec_md": spec_md,
+                    "constraints": constraints,
+                    "depends_on": s.get("depends_on", []),
+                })
+            return result
+        except Exception:
+            return []
+
+    def _execute_decompose_phase(
+        self,
+        orchestrator: Any,
+        task: str,
+        spec_md: str | None,
+        constraints: list[str],
+    ) -> None:
+        """Execute the DECOMPOSE phase: classify complexity, decompose if needed.
+
+        Side-effects:
+          - Sets orchestrator._decomposition_result with subtask list
+          - Transitions orchestrator state from DECOMPOSE to PLAN
+        """
+        complexity = self._classify_task_complexity(task)
+
+        if complexity == TaskComplexity.SIMPLE:
+            # No decomposition needed — transition immediately
+            orchestrator._decomposition_result = [{
+                "description": task,
+                "task_id": str(uuid.uuid4())[:8],
+                "spec_md": spec_md,
+                "constraints": constraints or [],
+                "depends_on": [],
+            }]
+            orchestrator.state = RalphState.PLAN
+            return
+
+        # Complex: decompose via LLM
+        subtasks = self._decompose_task(task, spec_md, constraints or [])
+        if not subtasks:
+            # Decomposition failed — fall back to single task
+            subtasks = [{
+                "description": task,
+                "task_id": str(uuid.uuid4())[:8],
+                "spec_md": spec_md,
+                "constraints": constraints or [],
+                "depends_on": [],
+            }]
+
+        orchestrator._decomposition_result = subtasks
+
+        # Update orchestrator task_queue with decomposed subtasks
+        orchestrator.task_queue = subtasks
+        orchestrator.task_index = 0
+
+        # Transition to PLAN
+        orchestrator.state = RalphState.PLAN
+
     def _select_model(
         self,
         task_type: TaskType,
@@ -1026,6 +1200,12 @@ class RalphLoopExecutor:
             if skill:
                 self._evo.store_skill(skill)
                 self._skills_learned_count += 1
+            # Record failed recovery attempt
+            if self._evo._current_event is not None:
+                self._evo.update_recovery_result(
+                    succeeded=False,
+                    recovery_used="pytest-failure",
+                )
         elif pytest_passed is True:
             # Test success: capture successful pattern for future similar tasks
             success_skill = self._evo.analyze_and_capture_success(
@@ -1035,6 +1215,17 @@ class RalphLoopExecutor:
             if success_skill:
                 self._evo.store_skill(success_skill)
                 self._skills_learned_count += 1
+            # If there was a pending error event (recovery was applied during ACT),
+            # mark it as successfully recovered so success/failure counts are tracked
+            if self._evo._current_event is not None:
+                recovery_steps = self._evo.get_best_recovery(
+                    self._evo._current_event.error_message
+                )
+                self._evo.update_recovery_result(
+                    succeeded=True,
+                    recovery_used=recovery_steps or "applied-recovery-hints",
+                )
+                self._errors_recovered_count += 1
 
     def _learn_from_errors(self, ctx: ImplementationContext) -> None:
         """Learn from any errors encountered during execution."""
@@ -1053,6 +1244,15 @@ class RalphLoopExecutor:
                 if skill:
                     self._evo.store_skill(skill)
                     self._skills_learned_count += 1
+                # If recovery was already injected (errors still occurred), mark as failed
+                if self._evo._current_event is not None:
+                    recovery_used = self._evo.get_best_recovery(
+                        self._evo._current_event.error_message
+                    )
+                    self._evo.update_recovery_result(
+                        succeeded=False,
+                        recovery_used=recovery_used or "error-during-execution",
+                    )
 
     # ─── System Prompt Builder ─────────────────────────────────────────────
 
