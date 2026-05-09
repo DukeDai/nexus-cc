@@ -126,6 +126,7 @@ class RalphLoopMetrics:
     total_iterations: int = 0
     total_retries: int = 0
     total_escalations: int = 0
+    total_turns: int = 0          # Total LLM turns across all phases
     context_tier_changes: int = 0
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
@@ -134,6 +135,10 @@ class RalphLoopMetrics:
     def record_state(self, state: RalphState) -> None:
         self.states_visited.append(state)
         self.total_iterations += 1
+
+    def add_turns(self, n: int) -> None:
+        """Record LLM turns (called from executor after each phase)."""
+        self.total_turns += n
 
     def duration_seconds(self) -> Optional[float]:
         if self.start_time and self.end_time:

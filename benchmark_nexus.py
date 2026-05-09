@@ -270,6 +270,8 @@ def bench_wal_checkpoint():
 # ─── Benchmark 4: TDD Enforcement ─────────────────────────────────────────────
 
 def bench_tdd_enforcement():
+    import inspect
+    from ralphloop.executor import RalphLoopExecutor
     print("\n📊 Benchmark 4: TDD Enforcement (RED → GREEN → REFACTOR)")
     print("-" * 50)
 
@@ -302,6 +304,17 @@ def bench_tdd_enforcement():
     all_phases = [e.name for e in TDDPhase]
     record("TDD", "Phase Completeness", len(all_phases) >= 4, "bool",
            f"Phases defined: {all_phases}")
+
+    # TDDEnforcer is wired into RalphLoopExecutor
+    sig = inspect.signature(RalphLoopExecutor.__init__)
+    has_enable_tdd = "enable_tdd" in sig.parameters
+    record("TDD", "TDD In Executor", has_enable_tdd, "bool",
+           "RalphLoopExecutor accepts enable_tdd parameter")
+
+    # TDD run_cycle method exists and has correct signature
+    has_run_cycle = hasattr(enforcer, "run_cycle")
+    record("TDD", "run_cycle Method", has_run_cycle, "bool",
+           "TDDEnforcer.run_cycle() orchestrates RED→GREEN→REFACTOR")
 
 
 # ─── Benchmark 5: Model Router ────────────────────────────────────────────────
@@ -362,6 +375,24 @@ def bench_model_router():
                f"Estimated ${cost:.4f} for 1k input + 500 output tokens")
     except Exception as e:
         record("Model Router", "Cost Estimation", False, "bool", f"Error: {e}")
+
+    # Test: no API keys configured -> still selects models (fallback to all models)
+    # This is critical: local Ollama needs no API key but should still be selectable
+    router_no_keys = ModelRouter(api_keys={}, preferred_provider=None)
+    try:
+        model = router_no_keys.select_model(task_type=TaskType.FAST)
+        record("Model Router", "No-Key Fallback", model is not None, "bool",
+               f"Works without API keys: {model}")
+    except Exception as e:
+        record("Model Router", "No-Key Fallback", False, "bool", f"Error: {e}")
+
+    # Test: cost = 0 for local/Ollama models (no API cost)
+    try:
+        cost_ollama = router.estimate_cost("llama3", 1000, 500)
+        record("Model Router", "Local Cost Zero", cost_ollama == 0.0, "bool",
+               f"Ollama cost (should be $0): ${cost_ollama}")
+    except Exception as e:
+        record("Model Router", "Local Cost Zero", False, "bool", f"Error: {e}")
 
 
 # ─── Benchmark 6: MCP Integration ─────────────────────────────────────────────

@@ -274,12 +274,17 @@ class ModelRouter:
         candidates = list(self.models.keys())
 
         # Filter: only models from providers where we have API keys
+        # Fallback: if no API keys configured, use all models (local/Ollama/etc.)
         if self.api_keys:
             available_providers = set(self.api_keys.keys())
             candidates = [
                 m for m in candidates
                 if self.models[m].provider in available_providers
             ]
+            # If no providers available (no API keys set), fall back to all models
+            # This supports local models (Ollama, etc.) that need no API key
+            if not candidates:
+                candidates = list(self.models.keys())
 
         # Filter: preferred provider
         if self.preferred_provider:

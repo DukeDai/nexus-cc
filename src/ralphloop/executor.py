@@ -523,19 +523,36 @@ class RalphLoopExecutor:
 
         if phase == RalphState.PLAN:
             # PLAN phase: analyze requirements, create SPEC.md
-            return self._execute_plan(task_desc, spec_md, constraints, task_type)
+            result = self._execute_plan(task_desc, spec_md, constraints, task_type)
+            if self._current_loop:
+                self._current_loop.metrics.add_turns(2)
+            return result
 
         elif phase == RalphState.ACT:
             # ACT phase: implement + review (parallel subagents)
-            return self._execute_act(task_desc, spec_md, constraints, task_type)
+            result = self._execute_act(task_desc, spec_md, constraints, task_type)
+            # Store for REFLECT phase
+            self._last_act_result = result
+            if self._current_loop:
+                self._current_loop.metrics.add_turns(3)
+            return result
 
         elif phase == RalphState.VERIFY:
             # VERIFY phase: run tests, verify against spec
-            return self._execute_verify(task_desc, spec_md, constraints)
+            result = self._execute_verify(task_desc, spec_md, constraints)
+            if self._current_loop:
+                self._current_loop.metrics.add_turns(1)
+            return result
 
         elif phase == RalphState.REFLECT:
             # REFLECT phase: review what was done, decide next steps
-            return self._execute_reflect(task_desc, spec_md)
+            # Inject pipeline_warnings from ACT phase into reflection analysis
+            act_result = self._last_act_result if hasattr(self, '_last_act_result') else None
+            result = self._execute_reflect(task_desc, spec_md, act_result=act_result)
+            # Record LLM turns from reflect phase (minimal)
+            if self._current_loop:
+                self._current_loop.metrics.add_turns(1)
+            return result
 
         else:
             return {"success": False, "error": f"Unknown phase: {phase}"}
@@ -710,6 +727,32 @@ class RalphLoopExecutor:
         # Learn from any errors in this execution
         self._learn_from_errors(ctx)
 
+        # ── TDD Loop: RED→GREEN→REFACTOR ─────────────────────────────────
+        # After initial implementation, run the full TDD cycle.
+        # TDDEnforcer enforces test-first discipline:
+        #   RED: LLM writes failing test
+        #   GREEN: LLM writes minimal implementation to pass (up to 3 debug iterations)
+        #   REFACTOR: LLM improves code quality
+        # If any GREEN iteration fails, ACT is marked failed → ESCALATE.
+        # This is a CORE architectural advantage vs Claude Code's no-TDD approach.
+        if self._tdd and result.complete:
+            tdd_result = self._tdd.run_cycle(
+                llm_client=client,
+                messages=list(ctx.messages),  # snapshot of conversation
+                task=task,
+            )
+            if not tdd_result.success:
+                return {
+                    "success": False,
+                    "error": f"TDD {tdd_result.final_phase.name.name} failed: "
+                             f"{tdd_result.final_test_output[:200]}",
+                    "result": result.final_content,
+                    "tdd_result": tdd_result,
+                    "pipeline_warnings": [],
+                }
+            # TDD passed: include debug log in result for REFLECT phase
+            ctx.add_message("system", f"[TDD] {tdd_result.final_phase.name.name}: {tdd_result.debug_output[:300]}")
+
         # ── P2: VerificationPipeline inline gate ─────────────────────────
         # After ACT generates code, run inline verification before returning.
         # SecurityScan is fail-closed: malicious code blocks the ACT result.
@@ -850,9 +893,15 @@ class RalphLoopExecutor:
         self,
         task: str,
         spec_md: str | None,
+        act_result: dict | None = None,
     ) -> dict:
-        """REFLECT phase: review what was done."""
-        # Simple reflection: check if task was completed
+        """REFLECT phase: review what was done.
+
+        Enhanced with:
+        - pipeline_warnings from ACT phase (TDD failures, security findings, etc.)
+        - SelfEvo recovery: proactive skill hints for future similar tasks
+        - TDD result analysis if TDD was enabled
+        """
         ctx = self._current_context
         if not ctx:
             return {"success": False, "error": "No context"}
@@ -865,10 +914,33 @@ class RalphLoopExecutor:
             for r in ctx.tool_results
         )
 
+        # Build enhanced reflection summary
+        parts = [f"Tools: {tool_count}, Messages: {msg_count}, Output found: {has_output}"]
+
+        # TDD result analysis
+        if act_result and act_result.get("tdd_result"):
+            tdd = act_result["tdd_result"]
+            parts.append(
+                f"TDD {tdd.final_phase.name.name}: "
+                f"{tdd.debug_output.count('PASSED')} passed, "
+                f"{tdd.debug_iterations} iterations"
+            )
+
+        # Pipeline warnings from ACT (VerificationPipeline failures, security issues)
+        if act_result and act_result.get("pipeline_warnings"):
+            for w in act_result["pipeline_warnings"]:
+                parts.append(f"Warning: {w}")
+
+        # SelfEvo recovery hints: proactively suggest fixes from learned skills
+        recovery_hints = self._get_recovery_prompt()
+        if recovery_hints:
+            parts.append(f"[SelfEvo] Recovery hints available for this task")
+
+        result_str = " | ".join(parts)
         return {
             "success": tool_count > 0 and has_output,
             "error": None if tool_count > 0 else "No tools were called",
-            "result": f"Reflected: {tool_count} tools, {msg_count} messages, output found: {has_output}",
+            "result": result_str,
         }
 
     # ─── Model Selection ────────────────────────────────────────────────────

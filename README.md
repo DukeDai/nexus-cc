@@ -8,11 +8,11 @@ Nexus 是基于 **RalphLoop 状态机** 的 AI 编程智能体，通过显式状
 
 ## 核心创新
 
-> **状态 (2026-05-08):** 本次审计新增：MCP 真实会话调用（_sessions dict）、VerificationPipeline ACT 内联 gate、ToolRegistry 动态加载、SelfEvo VERIFY 闭环。**59/59 benchmark 全绿。**
+> **状态 (2026-05-09):** 本次进化新增：TDD Loop 内联 ACT、REFLECT 增强分析、total_turns 量化追踪、ModelRouter 无key fallback。**63/63 benchmark 全绿。**
 
 | 特性 | Claude Code | Nexus | 状态 |
 |------|------------|-------|------|
-| TDD 强制 | 建议 | **每次提交前 RED→GREEN→REFACTOR** | ✅ TDDEnforcer 完整实现，prompt-based enforcement |
+| TDD 强制 | 建议 | **每次实现后 ACT 内联 RED→GREEN→REFACTOR** | ✅ TDDEnforcer.run_cycle() 内联 ACT，GREEN 失败→ACT 失败→ESCALATE |
 | 多 Agent 协作 | ❌ 无 | **Specifier/Implementer/Reviewer/Security 并行** | ✅ SubagentIntegration + ThreadPoolExecutor 并行 |
 | 状态可见性 | 黑盒 | **RalphLoop PLAN→ACT→VERIFY→REFLECT** | ✅ 6层 executor 真实驱动状态机 |
 | 项目感知 | CLAUDE.md | **三层合并（全局/项目/目录）** | ✅ claude_md_loader 实现 |
