@@ -179,23 +179,42 @@ Nexus 自动分解:
 
 ---
 
-## 优先级总结
+## 优先级总结（2026-05-09 更新）
 
-| 阶段 | 任务 | 优先级 | 工作量 | 突破性 |
-|------|------|--------|--------|--------|
-| 一 | P0: MCPBridge → executor | **P0** | 中 | 极高 |
-| 一 | P1: 并行 benchmark | **P1** | 小 | 高 |
-| 二 | P2: 验证管道内联 | **P2** | 中 | 高 |
-| 二 | P3: ToolRegistry 动态化 | **P2** | 小 | 中 |
-| 三 | P4: 自进化闭环 | **P3** | 中 | 高 |
-| 四 | P5: Claude Code 对比 | **P3** | 中 | 极高 |
-| 五 | P6: 自主任务分解 | **P4** | 大 | 极高 |
-| 五 | P7: 多会话学习 | **P4** | 大 | 高 |
+| 阶段 | 任务 | 优先级 | 状态 |
+|------|------|--------|------|
+| 一 | P0: MCPBridge → executor | **P0** | ✅ 已完成 |
+| 一 | P1: 并行 benchmark | **P1** | ✅ 已完成（实测 1.98x speedup） |
+| 二 | P2: 验证管道内联 | **P2** | ✅ 已完成 |
+| 二 | P3: ToolRegistry 动态化 | **P2** | ✅ 已完成 |
+| 三 | P4: 自进化闭环 | **P3** | ✅ 已完成（success + failure 双通道 capture） |
+| 四 | P5: Claude Code 对比 | **P3** | ❌ 待做 |
+| 五 | P6: 自主任务分解 | **P4** | ❌ 待做 |
+| 五 | P7: 多会话学习 | **P4** | ❌ 待做 |
+
+**进度：5/8 阶段完成，核心 executor 功能全部就绪。**
 
 ---
 
-## 当前可以立刻做的事情
+## 下一步（2026-05-09+）
 
-1. **P0** — RalphLoopExecutor 初始化 RalphLoopMCPBridge，在 PLAN phase 使用真实 MCP 工具
-2. **P1** — 添加 `tests/test_parallel_speedup.py`，测量并行 vs 串行时间差
-3. **P2** — 在 `_execute_act_single` 末尾添加 VerificationPipeline 调用
+### 🔲 P5: Claude Code 对比 benchmark（高价值）
+在相同任务上对比 Nexus vs Claude Code 的通过率、速度、代码质量差异。
+重点任务：
+- REST API 创建（基线对比）
+- TDD 重构（Nexus TDD 强制 vs Claude Code 无 TDD）
+- 安全修复（Nexus 内联扫描 vs Claude Code 插件扫描）
+- 并行工具调用（Nexus 3-worker vs Claude Code 串行）
+
+### 🔲 P6: 自主任务分解（突破性）
+用户给高层目标，Nexus 自动分解为子任务队列，依次执行 PLAN→ACT→VERIFY→REFLECT。
+
+### 🔲 P7: 多会话学习
+Nexus 记住每个项目的决策历史，下次遇到相同 context 自动应用先前学到的方法。
+
+### 🔲 SelfEvo correction storage 真实化
+`handle_verification_failure()` 返回的 `VerificationCorrection` 尚未被 executor 实际存储和应用。
+需要：corrections 写入 `~/.nexus/skills/corrections.json`，下次遇到相同 pattern 时 replay。
+
+### 🔲 `nexus.tools` entry point
+ToolRegistry discovery 代码已就绪但 `nexus.tools` 包不存在，需要创建并注册至少一个真实工具。

@@ -232,6 +232,56 @@ class SelfEvolutionEngine:
 
         return skill
 
+    def analyze_and_capture_success(
+        self,
+        task_context: str,
+        output_summary: str,
+    ) -> LearnedSkill | None:
+        """Analyze a successful execution and capture the successful pattern.
+
+        Unlike errors which are captured by trigger pattern, successes are
+        captured by task context similarity. This lets Nexus remember what
+        worked for similar tasks and replay it proactively.
+
+        Returns a LearnedSkill if the pattern is novel enough to store.
+        """
+        if not task_context:
+            return None
+
+        # Build a skill id from the task context keywords
+        words = re.findall(r"[A-Za-z_]+", task_context.lower())
+        key = "_".join(w for w in words[:5] if len(w) > 2)
+        skill_id = f"success-{hashlib.md5(key.encode()).hexdigest()[:8]}"
+
+        # Avoid duplicating recent successes
+        if skill_id in self._skills_cache:
+            return None
+
+        # Extract "what worked" from the output summary
+        summary_lines = [
+            line.strip()
+            for line in output_summary.split("\n")
+            if line.strip() and len(line.strip()) > 10
+        ][:5]
+
+        skill = LearnedSkill(
+            name=f"success-{skill_id}",
+            description=(
+                f"Successful approach for: {task_context[:80]}. "
+                f"Output: {output_summary[:80]}"
+            ),
+            trigger=re.escape(task_context[:50]),  # Use task context as trigger
+            root_cause="N/A — successful execution",
+            recovery_steps=[
+                f"Verified approach: {line}"
+                for line in summary_lines
+            ] if summary_lines else ["Task completed successfully — apply same approach"],
+            verification="Verify the output matches the task requirements.",
+            error_examples=[],
+        )
+
+        return skill
+
     def store_skill(self, skill: LearnedSkill) -> Path:
         """Save a learned skill as a SKILL.md file."""
         skill_path = self.skills_dir / f"{skill.name}.md"
@@ -248,6 +298,10 @@ class SelfEvolutionEngine:
             if re.search(skill.trigger, error_message, re.IGNORECASE):
                 relevant.append(skill)
         return relevant
+
+    def get_all_skills(self) -> list[LearnedSkill]:
+        """Return all learned skills from cache."""
+        return list(self._skills_cache.values())
 
     def get_best_recovery(self, error_message: str) -> str | None:
         """Get the most successful recovery for an error pattern.

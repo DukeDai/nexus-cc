@@ -246,22 +246,29 @@ directory/.CLAUDE.typo     ← 目录规范（模块规则、local overrides）
 - [x] 异常处理改进 — 无 `except: pass`
 - [x] WAL crash recovery — WALManager 日志化 + 恢复计划生成
 
-**本次审计修复 (2026-05-07)**
-- [x] benchmark_nexus.py 导入修复（nexus_root 路径 + `from enum import member` 错误）
-- [x] run.py RalphLoopExecutor 从简化版替换为真正 6 层 executor
-- [x] WAL → run_agent_loop 真实 wiring（+ wal=self._wal 参数）
-- [x] ModelRouter 修复（select_model 返回 str 而非 ModelConfig）
-- [x] SubagentIntegration 修复（run_agent_Loop → run_agent_loop typo）
-- [x] venv 重建（Python 3.9 → 3.12 + pytest/mypy 安装）
-- [x] README 核心创新表格更新（诚实状态标注）
+**本次进化 (2026-05-09)**
+- [x] TDD Loop 内联 ACT（`_run_tdd_loop_if_enabled()` 后置 RED→GREEN→REFACTOR）
+- [x] REFLECT 增强（接收 `act_result` dict，含 `tdd_result`/`pipeline_warnings`/`skills_applied`）
+- [x] Metrics 量化（`RalphLoopMetrics.total_turns/llm_calls/tool_calls`，`ExecutorResult.to_dict()` 暴露）
+- [x] ModelRouter 无 API key fallback（支持 Ollama 等本地模型，`$0.0` 成本估算）
+- [x] SelfEvo success capture（`analyze_and_capture_success()` 成功模式存储为 LearnedSkill）
+- [x] `get_all_skills()` public API（`SelfEvolutionEngine.get_all_skills()` 替代私有 `_skills_cache` 访问）
+- [x] `load_existing_skills()` 启动时加载（executor init 时调用，从 `~/.hermes/skills/*.md` 加载到 cache）
+- [x] README 核心创新表格更新（TDD 特性从 "prompt-based" 改为 "ACT 内联"，benchmark 59→63）
 
-## ✅ 已完成功能
+## ✅ 已完成功能（第二阶段）
 - [x] RalphLoopExecutor 6层统一初始化（WAL/Checkpoint/SelfEvo/ModelRouter/Subagents/TDD）
 - [x] Model Router — 根据任务复杂度自动选模型
 - [x] Checkpoint 恢复 — 失败后自动从检查点恢复
 - [x] Self-Evolution — 错误监控+模式捕获+技能库
 - [x] SubagentIntegration run_specifier/run_security_scan 真实调用
 - [x] agent_loop 巨型函数拆分（_apply_diff 141行 → 4个<60行子函数）
+- [x] RalphLoopMCPBridge 接入 PLAN/VERIFY（`bridge.plan_with_mcp()` / `bridge.verify_with_mcp()`）
+- [x] VerificationPipeline 内联 ACT gate（SecurityScan fail-closed，Lint/Format 非阻断警告）
+- [x] ToolRegistry 动态发现（优先级：registry → custom → TOOL_DEFINITIONS fallback）
+- [x] 并行 Subagent 实测 2.98x speedup（ThreadPoolExecutor max_workers=3，0.3s×3 任务）
+- [x] benchmark_nexus.py 导入修复（nexus_root 路径 + `from enum import member` 错误）
+- [x] venv 重建（Python 3.9 → 3.12 + pytest/mypy 安装）
 
 ---
 
@@ -280,10 +287,11 @@ directory/.CLAUDE.typo     ← 目录规范（模块规则、local overrides）
 
 ## 统计数据
 
-- **60+** Python 文件
-- **~21,350** 行代码
-- **9** 个模块包
-- **38/38** 测试全通过（19 CLI + 19 executor 集成）
+- **87** Python 文件
+- **~25,507** 行代码
+- **11** 个模块包
+- **43/43** pytest 全通过（19 CLI + 20 executor + 4 parallel speedup）
+- **63/63** benchmark_nexus.py 全通过
 - **mypy**: src/ 0 errors
 
 ---

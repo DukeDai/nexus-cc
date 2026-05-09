@@ -83,6 +83,10 @@ class ExecutorResult:
             "wal_entries": self.wal_entries,
             "errors_recovered": self.errors_recovered,
             "error_log": self.error_log,
+            "total_turns": self.metrics.total_turns,
+            "total_llm_calls": self.metrics.total_llm_calls,
+            "total_tool_calls": self.metrics.total_tool_calls,
+            "total_cost_from_metrics": round(self.metrics.total_cost_usd, 6),
         }
 
 
@@ -344,7 +348,7 @@ class RalphLoopExecutor:
         if not self._evo:
             return ""
 
-        skills = list(self._evo._skills_cache.values())
+        skills = self._evo.get_all_skills()
         if not skills:
             return ""
 
@@ -352,7 +356,7 @@ class RalphLoopExecutor:
             "\n\n## Cross-Session Error Recovery (Nexus Self-Evolution)\n",
             "Based on previous sessions, here are known error patterns and their fixes:\n",
         ]
-        for skill in skills[-5:]:  # Show last 5 relevant skills
+        for skill in skills[-5:]:  # Show last 5 skills
             if skill.trigger and skill.recovery_steps:
                 lines.append(f"### If you see: `{skill.trigger}`")
                 for i, step in enumerate(skill.recovery_steps[:3], 1):
@@ -1023,14 +1027,14 @@ class RalphLoopExecutor:
                 self._evo.store_skill(skill)
                 self._skills_learned_count += 1
         elif pytest_passed is True:
-            # Test success: log as successful pattern for pattern recognition
-            self._evo.monitor_error(
-                tool_name="pytest",
-                tool_args={},
-                tool_result=f"[SUCCESS] {pytest_output[:200]}",
+            # Test success: capture successful pattern for future similar tasks
+            success_skill = self._evo.analyze_and_capture_success(
                 task_context=task_context,
+                output_summary=pytest_output[:200],
             )
-            # No skill capture on success, but error is logged for future analysis
+            if success_skill:
+                self._evo.store_skill(success_skill)
+                self._skills_learned_count += 1
 
     def _learn_from_errors(self, ctx: ImplementationContext) -> None:
         """Learn from any errors encountered during execution."""
