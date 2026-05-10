@@ -95,6 +95,7 @@ class WALManager:
             raise RuntimeError("WALManager is closed")
         if self._current_file is None:
             self._init_wal_file()
+        assert self._current_file is not None
         entry.wal_file = str(self._current_file)
         line = entry.to_json_line() + "\n"
         self._current_file.write_text(

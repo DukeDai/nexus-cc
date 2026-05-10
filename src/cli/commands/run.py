@@ -19,8 +19,19 @@ from self_evolution import SelfEvolutionEngine  # used for skills loading
 
 
 def _detect_provider() -> tuple[Provider, str, str, str]:
-    """Auto-detect best available LLM provider. Returns (provider, api_key, base_url, model)."""
+    """Auto-detect best available LLM provider. Returns (provider, api_key, base_url, model).
+
+    Priority: SCNET_API_KEY env > ANTHROPIC_API_KEY env > settings > Ollama > default
+    """
     import json as _json
+
+    # ENV: SCNET (sk-sp- prefix) — highest priority, checked first
+    scnet_key = os.environ.get("SCNET_API_KEY", "")
+    if scnet_key and scnet_key.startswith("sk-sp-"):
+        os.environ["SCNET_API_KEY"] = scnet_key
+        scnet_base = os.environ.get("SCNET_BASE_URL", "https://api.scnet.cn/api/llm/anthropic/v1")
+        scnet_model = os.environ.get("SCNET_MODEL", "MiniMax-M2.7")
+        return Provider.MINIMAX_CN, scnet_key, scnet_base, scnet_model
 
     # Check Claude settings (CC Switch)
     settings_path = Path.home() / ".claude" / "settings.json"
@@ -32,7 +43,7 @@ def _detect_provider() -> tuple[Provider, str, str, str]:
         except Exception:
             pass
 
-    # ENV takes precedence
+    # ENV or settings for Anthropic
     auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or settings_env.get("ANTHROPIC_AUTH_TOKEN", "")
     api_key = os.environ.get("ANTHROPIC_API_KEY") or settings_env.get("ANTHROPIC_API_KEY", "")
     base_url = os.environ.get("ANTHROPIC_BASE_URL") or settings_env.get("ANTHROPIC_BASE_URL", "")
@@ -77,6 +88,8 @@ def _get_model_for_provider(provider: Provider, settings_model: str = "") -> str
         return os.environ.get("OPENAI_MODEL", "gpt-4o")
     if provider == Provider.OLLAMA:
         return os.environ.get("OLLAMA_MODEL", "llama3")
+    if provider == Provider.MINIMAX_CN:
+        return os.environ.get("SCNET_MODEL", "MiniMax-2.5")
     return "claude-sonnet-4-20250514"
 
 

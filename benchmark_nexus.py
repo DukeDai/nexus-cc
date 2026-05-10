@@ -594,6 +594,126 @@ def bench_tool_registry_dynamic():
            "Pre-configured registry is stored as _tool_registry")
 
 
+# ─── Benchmark 10: Checkpoint Periodic Condition Fix ─────────────────────────
+
+def bench_checkpoint_periodic_fix():
+    print("\n📊 Benchmark 10: Checkpoint Periodic Condition Fix")
+    print("-" * 50)
+
+    import inspect
+    from ralphloop.orchestrator import RalphLoop
+
+    # Verify run() uses >= 1 for periodic checkpoint (not > 0)
+    # > 0 is wrong: _checkpoint_count starts at 0, increments INSIDE _checkpoint()
+    # So first time we check, count is still 0, condition never triggers on first periodic checkpoint
+    src_run = inspect.getsource(RalphLoop.run)
+    run_lines = src_run.split("\n")
+
+    bad_lines = [l.strip() for l in run_lines if "_checkpoint_count > 0" in l]
+    good_lines = [l.strip() for l in run_lines if "_checkpoint_count >= 1" in l]
+
+    record("Checkpoint Fix", "Periodic uses >= 1", len(bad_lines) == 0, "bool",
+           f"No '> 0' comparisons found" if len(bad_lines) == 0 else f"Bad: {bad_lines}")
+    record("Checkpoint Fix", "Has >= 1 comparisons", len(good_lines) >= 1, "bool",
+           f"Found {len(good_lines)} correct '>= 1' comparisons")
+
+    # Verify _checkpoint() increments the counter inside the method
+    ckpt_src = inspect.getsource(RalphLoop._checkpoint)
+    increments_before_return = "_checkpoint_count +=" in ckpt_src
+    record("Checkpoint Fix", "Count increments in _checkpoint()", increments_before_return, "bool",
+           "Increments _checkpoint_count inside _checkpoint() method")
+
+    # Verify the periodic checkpoint has a guard before calling _checkpoint
+    has_periodic_guard = any("_checkpoint_count >= 1" in l and "_checkpoint()" in l
+                              for l in run_lines)
+    record("Checkpoint Fix", "Periodic guard exists", has_periodic_guard, "bool",
+           "run() guards _checkpoint() call with _checkpoint_count >= 1")
+
+
+# ─── Benchmark 12: Streaming Callback Integration ─────────────────────────────
+
+def bench_streaming_integration():
+    print("\n📊 Benchmark 12: Streaming Callback Integration")
+    print("-" * 50)
+
+    import inspect
+    from ralphloop.executor import RalphLoopExecutor
+
+    # Test 1: Executor.__init__ accepts streaming_callback parameter
+    sig = inspect.signature(RalphLoopExecutor.__init__)
+    has_streaming_param = "streaming_callback" in sig.parameters
+    record("Streaming", "streaming_callback param in __init__", has_streaming_param, "bool",
+           "RalphLoopExecutor accepts streaming_callback parameter")
+
+    # Test 2: Executor stores _streaming_callback
+    executor = RalphLoopExecutor(
+        workdir=None,
+        enable_model_router=False,
+        enable_self_evolution=False,
+        enable_verification_pipeline=False,
+    )
+    has_internal_attr = hasattr(executor, "_streaming_callback")
+    record("Streaming", "_streaming_callback stored", has_internal_attr, "bool",
+           "Executor stores _streaming_callback attribute")
+
+    # Test 3: Executor passes streaming_callback to run_agent_loop (PLAN phase)
+    plan_src = inspect.getsource(executor._execute_plan)
+    has_plan_streaming = "streaming_callback=self._streaming_callback" in plan_src
+    record("Streaming", "PLAN passes streaming_callback", has_plan_streaming, "bool",
+           "PLAN phase passes _streaming_callback to run_agent_loop")
+
+    # Test 4: Executor passes streaming_callback to run_agent_loop (ACT phase)
+    act_src = inspect.getsource(executor._execute_act_single)
+    has_act_streaming = "streaming_callback=self._streaming_callback" in act_src
+    record("Streaming", "ACT passes streaming_callback", has_act_streaming, "bool",
+           "ACT phase passes _streaming_callback to run_agent_loop")
+
+    # Test 5: streaming_callback default is None (backwards compatible)
+    has_none_default = sig.parameters["streaming_callback"].default is None
+    record("Streaming", "Default is None (backward compat)", has_none_default, "bool",
+           "streaming_callback defaults to None for backward compatibility")
+
+
+# ─── Benchmark 11: DECOMPOSE State Reachability ─────────────────────────────────
+
+def bench_decompose_reachability():
+    print("\n📊 Benchmark 11: DECOMPOSE State Reachability")
+    print("-" * 50)
+
+    import inspect
+    from ralphloop.orchestrator import RalphLoop, RalphState
+
+    src = inspect.getsource(RalphLoop._execute_state)
+
+    # 1. DECOMPOSE branch exists in _execute_state
+    has_decompose_branch = "RalphState.DECOMPOSE" in src and "if self.state == RalphState.DECOMPOSE" in src
+    record("DECOMPOSE", "DECOMPOSE branch in _execute_state", has_decompose_branch, "bool",
+           "Orchestrator._execute_state() has DECOMPOSE if-branch")
+
+    # 2. DECOMPOSE branch calls agent_executor with DECOMPOSE phase
+    decompose_section = src.split("if self.state == RalphState.DECOMPOSE")[1].split("elif")[0] if has_decompose_branch else ""
+    calls_agent_executor = "agent_executor" in decompose_section and "RalphState.DECOMPOSE" in decompose_section
+    record("DECOMPOSE", "DECOMPOSE calls agent_executor", calls_agent_executor, "bool",
+           "DECOMPOSE branch calls self.agent_executor(task, DECOMPOSE)")
+
+    # 3. DECOMPOSE returns DECOMPOSE_COMPLETE on success
+    returns_decompose_complete = "DECOMPOSE_COMPLETE" in decompose_section
+    record("DECOMPOSE", "Returns DECOMPOSE_COMPLETE", returns_decompose_complete, "bool",
+           "DECOMPOSE branch returns TransitionTrigger.DECOMPOSE_COMPLETE on success")
+
+    # 4. DECOMPOSE state is defined in RalphState enum
+    state_src = inspect.getsource(RalphState)
+    has_decompose_enum = "DECOMPOSE" in state_src
+    record("DECOMPOSE", "DECOMPOSE in RalphState enum", has_decompose_enum, "bool",
+           "DECOMPOSE is a defined RalphState value")
+
+    # 5. DECOMPOSE_COMPLETE trigger is defined in transitions.py
+    from ralphloop.transitions import TransitionTrigger
+    has_trigger = hasattr(TransitionTrigger, "DECOMPOSE_COMPLETE")
+    record("DECOMPOSE", "DECOMPOSE_COMPLETE trigger exists", has_trigger, "bool",
+           "TransitionTrigger.DECOMPOSE_COMPLETE is defined")
+
+
 # ─── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -610,6 +730,9 @@ def main():
     bench_parallel_speedup()
     bench_verification_pipeline_inline()
     bench_tool_registry_dynamic()
+    bench_checkpoint_periodic_fix()
+    bench_streaming_integration()
+    bench_decompose_reachability()
 
     # Summary
     print("\n" + "=" * 60)

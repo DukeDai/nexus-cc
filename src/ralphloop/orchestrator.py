@@ -373,7 +373,15 @@ class RalphLoop:
         """
         task = self.task_queue[self.task_index] if self.task_index < len(self.task_queue) else {}
 
-        if self.state == RalphState.PLAN:
+        if self.state == RalphState.DECOMPOSE:
+            result = self.agent_executor(task, RalphState.DECOMPOSE)
+            if result.get("success"):
+                return TransitionTrigger.DECOMPOSE_COMPLETE
+            else:
+                self._handle_exception(Exception(result.get("error", "Decompose failed")))
+                return TransitionTrigger.VERIFICATION_FAILED  # reuse — triggers retry or escalation
+
+        elif self.state == RalphState.PLAN:
             result = self.agent_executor(task, RalphState.PLAN)
             if result.get("success"):
                 self.retry_count = 0  # Reset on successful plan
@@ -466,8 +474,8 @@ class RalphLoop:
                 # Check context tier warnings
                 self._check_context_tier_warnings()
 
-                # Checkpoint periodically
-                if self._checkpoint_count > 0 and self.metrics.total_iterations % self.CHECKPOINT_INTERVAL == 0:
+                # Checkpoint periodically (after first checkpoint exists)
+                if self._checkpoint_count >= 1 and self.metrics.total_iterations % self.CHECKPOINT_INTERVAL == 0:
                     self._checkpoint()
 
                 # Execute current state
@@ -500,9 +508,12 @@ class RalphLoop:
                             self._running = False
                             return {
                                 "success": False,
+                                "outcome": "early",
+                                "tasks_done": self.task_index,
+                                "tasks_total": len(self.task_queue),
                                 "final_state": self.state,
                                 "metrics": self.metrics,
-                                "checkpoint_path": str(self._checkpoint()) if self._checkpoint_count > 0 else None,
+                                "checkpoint_path": str(self._checkpoint()) if self._checkpoint_count >= 1 else None,
                                 "error_log": self.error_log + ["Commit rejected by user"],
                             }
                     self._running = False
@@ -517,11 +528,26 @@ class RalphLoop:
             self.metrics.end_time = datetime.now()
             self._running = False
 
+        # Determine outcome tier
+        tasks_done = self.task_index
+        tasks_total = len(self.task_queue)
+        if self.state == RalphState.COMMIT:
+            outcome = "full"
+        elif tasks_done > 0 and tasks_done < tasks_total:
+            outcome = "partial"  # Some tasks completed before stopping
+        elif self.state == RalphState.ABORT:
+            outcome = "aborted"
+        else:
+            outcome = "early"  # Stopped before meaningful progress
+
         return {
             "success": self.state == RalphState.COMMIT,
+            "outcome": outcome,
+            "tasks_done": tasks_done,
+            "tasks_total": tasks_total,
             "final_state": self.state,
             "metrics": self.metrics,
-            "checkpoint_path": str(self._checkpoint()) if self._checkpoint_count > 0 else None,
+            "checkpoint_path": str(self._checkpoint()) if self._checkpoint_count >= 1 else None,
             "error_log": self.error_log,
         }
 

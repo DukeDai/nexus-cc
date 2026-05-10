@@ -81,6 +81,8 @@ class ToolExecutor:
         """Initialize MCP tool names from connected MCP server."""
         try:
             import asyncio
+            if self.mcp_client is None:
+                return
             # Get tools from MCP server
             tools = asyncio.get_event_loop().run_until_complete(
                 self.mcp_client.list_tools()
@@ -408,7 +410,7 @@ class ToolExecutor:
 
     def _classify_hunk_edits(self, hunk_lines: list[tuple]) -> list:
         """Classify edits within hunk: context, replacement, deletion, insertion."""
-        edits = []
+        edits: list[tuple[str, str] | tuple[str, str, str]] = []
         j = 0
         while j < len(hunk_lines):
             typ, text = hunk_lines[j]
@@ -620,9 +622,9 @@ def run_agent_loop(
     # Initialize Self-Evolution engine on context (if not already set)
     if not hasattr(context, "_evolution_engine") or context._evolution_engine is None:
         try:
-            from ..self_evolution import SelfEvolutionEngine
-        except ImportError:
             from self_evolution import SelfEvolutionEngine
+        except ImportError:
+            from ..self_evolution import SelfEvolutionEngine
         context._evolution_engine = SelfEvolutionEngine()
         context._evolution_engine.load_existing_skills()
 
@@ -844,7 +846,7 @@ Write ONLY the implementation."""
                 continue
 
         # Execute tool calls (parallel for independent I/O operations)
-        def _exec_single(tc: dict) -> tuple[str, str, dict]:
+        def _exec_single(tc: dict) -> tuple[str, str, str]:
             tc_id = tc.get("id", "") or str(uuid.uuid4())[:8]
             tc_name = tc.get("name", "")
             tc_args = tc.get("args", tc.get("input", {}))
@@ -884,10 +886,6 @@ Write ONLY the implementation."""
             # Self-Evolution: learn from errors
             evolution: Any | None = getattr(context, "_evolution_engine", None)
             if evolution:
-                try:
-                    from ..self_evolution import SelfEvolutionEngine
-                except ImportError:
-                    from self_evolution import SelfEvolutionEngine
                 had_error = evolution.monitor_error(
                     tool_name=tc_name,
                     tool_args=tc.get("args", tc.get("input", {})),

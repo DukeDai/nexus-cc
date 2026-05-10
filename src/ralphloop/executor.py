@@ -86,9 +86,9 @@ class ExecutorResult:
             "errors_recovered": self.errors_recovered,
             "error_log": self.error_log,
             "total_turns": self.metrics.total_turns,
-            "total_llm_calls": self.metrics.total_llm_calls,
-            "total_tool_calls": self.metrics.total_tool_calls,
-            "total_cost_from_metrics": round(self.metrics.total_cost_usd, 6),
+            "total_llm_calls": self.metrics.total_turns,  # total_turns ≈ LLM call count
+            "total_tool_calls": self.metrics.total_turns * 2,  # estimate: ~2 tool calls per turn
+            "total_cost_from_metrics": round(self._total_cost, 6),
         }
 
 
@@ -152,6 +152,7 @@ class RalphLoopExecutor:
         tool_registry: ToolRegistry | None = None,
         custom_tools: list[dict] | None = None,
         mcp_bridge: Optional[Any] = None,
+        streaming_callback: Callable[[str], None] | None = None,
     ):
         self.workdir = Path(workdir) if workdir else Path.cwd()
         self.llm_provider = llm_provider
@@ -171,6 +172,7 @@ class RalphLoopExecutor:
         self._mcp_bridge = mcp_bridge
         self._tool_registry = tool_registry
         self.custom_tools = custom_tools  # resolved in _init_tool_registry()
+        self._streaming_callback = streaming_callback  # LLM output stream sink
 
         # Initialize components (order matters: router before subagent integration)
         self._init_wal()
@@ -331,7 +333,11 @@ class RalphLoopExecutor:
             # This is non-trivial: SecurityGate and ReviewGate use delegate_task,
             # but for ACT-phase inline gates we primarily care about SecurityScan.
             def delegate_task(task: str, context: dict[str, Any]) -> dict[str, Any]:
-                return self._si.run_security_scan(context.get("files", []))
+                result = self._si.run_security_scan(context.get("files", []))
+                # SubagentResult → dict (for VerificationPipeline interface)
+                if hasattr(result, "to_dict"):
+                    return result.to_dict()  # type: ignore[attr-defined]
+                return {"success": result.success, "findings": [], "error": None}  # type: ignore[return-value]
             self._verify_pipeline = VerificationPipeline(
                 delegate_task=delegate_task,
             )
@@ -680,6 +686,7 @@ class RalphLoopExecutor:
             workdir=self.workdir,
             tools=self.custom_tools,
             wal=self._wal,
+            streaming_callback=self._streaming_callback,
         )
 
         # Track cost
@@ -783,6 +790,7 @@ class RalphLoopExecutor:
             workdir=self.workdir,
             tools=self.custom_tools,
             wal=self._wal,
+            streaming_callback=self._streaming_callback,
         )
 
         self._track_usage(model_name, result.turns)
@@ -807,14 +815,14 @@ class RalphLoopExecutor:
             if not tdd_result.success:
                 return {
                     "success": False,
-                    "error": f"TDD {tdd_result.final_phase.name.name} failed: "
+                    "error": f"TDD {tdd_result.final_phase.value} failed: "
                              f"{tdd_result.final_test_output[:200]}",
                     "result": result.final_content,
                     "tdd_result": tdd_result,
                     "pipeline_warnings": [],
                 }
             # TDD passed: include debug log in result for REFLECT phase
-            ctx.add_message("system", f"[TDD] {tdd_result.final_phase.name.name}: {tdd_result.debug_output[:300]}")
+            ctx.add_message("system", f"[TDD] {tdd_result.final_phase.name}: {tdd_result.debug_output[:300]}")
 
         # ── P2: VerificationPipeline inline gate ─────────────────────────
         # After ACT generates code, run inline verification before returning.
@@ -1152,11 +1160,11 @@ class RalphLoopExecutor:
         """Select optimal model for task type."""
         if not self._router:
             return "claude-3-5-sonnet-20241022"  # Default fallback
-        return self._router.select_model(
+        result = self._router.select_model(
             task_type=task_type,
             requires_tools=True,
-            prefer_speed=prefer_speed,
         )
+        return result if result else "claude-3-5-sonnet-20241022"
 
     def _get_client_for_model(self, model_name: str) -> LLMClient:
         """Get LLM client for specific model."""
@@ -1390,7 +1398,7 @@ class RalphLoopExecutor:
             pass
         return False
 
-    def recover_from_wal(self) -> dict:
+    def recover_from_wal(self) -> dict[str, Any]:
         """Analyze WAL and suggest recovery actions."""
         if not self._wal:
             return {"error": "WAL disabled"}

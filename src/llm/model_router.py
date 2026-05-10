@@ -163,16 +163,26 @@ class ModelRouter:
             cost_per_1k_output=0.0,
             speed_factor=2.0,
         ),
+        "MiniMax-M2.5": ModelConfig(
+            name="MiniMax-M2.5",
+            provider=Provider.MINIMAX_CN,
+            context_window=1000000,
+            supports_tools=True,
+            supports_vision=False,
+            cost_per_1k_input=0.0,
+            cost_per_1k_output=0.0,
+            speed_factor=2.5,
+        ),
     }
     
     # Task to preferred model mapping
     TASK_PREFERENCES = {
-        TaskType.FAST: ["gpt-3.5-turbo", "claude-3-haiku", "gpt-4o-mini", "llama3", "MiniMax-M2.7"],
-        TaskType.REASONING: ["claude-3-5-sonnet-20241022", "gpt-4o", "claude-3-opus", "MiniMax-M2.7"],
-        TaskType.CODE: ["claude-3-5-sonnet-20241022", "gpt-4o", "MiniMax-M2.7", "codellama"],
-        TaskType.CREATIVE: ["claude-3-5-sonnet-20241022", "gpt-4o", "llama3", "MiniMax-M2.7"],
-        TaskType.ANALYSIS: ["claude-3-5-sonnet-20241022", "gpt-4o", "claude-3-opus", "MiniMax-M2.7"],
-        TaskType.TOOL_USE: ["claude-3-5-sonnet-20241022", "gpt-4o", "MiniMax-M2.7", "gpt-4o-mini"],
+        TaskType.FAST: ["gpt-3.5-turbo", "claude-3-haiku", "gpt-4o-mini", "llama3", "MiniMax-M2.5"],
+        TaskType.REASONING: ["claude-3-5-sonnet-20241022", "gpt-4o", "claude-3-opus", "MiniMax-M2.5"],
+        TaskType.CODE: ["claude-3-5-sonnet-20241022", "gpt-4o", "MiniMax-M2.5", "MiniMax-M2.7", "codellama"],
+        TaskType.CREATIVE: ["claude-3-5-sonnet-20241022", "gpt-4o", "llama3", "MiniMax-M2.5"],
+        TaskType.ANALYSIS: ["claude-3-5-sonnet-20241022", "gpt-4o", "claude-3-opus", "MiniMax-M2.5"],
+        TaskType.TOOL_USE: ["claude-3-5-sonnet-20241022", "gpt-4o", "MiniMax-M2.5", "gpt-4o-mini"],
         TaskType.VISION: ["claude-3-5-sonnet-20241022", "gpt-4o", "claude-3-opus"],
     }
     
@@ -275,22 +285,25 @@ class ModelRouter:
 
         # Filter: only models from providers where we have API keys
         # Fallback: if no API keys configured, use all models (local/Ollama/etc.)
+        # Note: use .value comparison because Provider enum may be imported from
+        # different modules (client vs model_router) creating distinct enum instances
         if self.api_keys:
-            available_providers = set(self.api_keys.keys())
+            available_provider_values = {p.value for p in self.api_keys}
             candidates = [
                 m for m in candidates
-                if self.models[m].provider in available_providers
+                if self.models[m].provider.value in available_provider_values
             ]
             # If no providers available (no API keys set), fall back to all models
             # This supports local models (Ollama, etc.) that need no API key
             if not candidates:
                 candidates = list(self.models.keys())
 
-        # Filter: preferred provider
+        # Filter: preferred provider (use .value for same reason)
         if self.preferred_provider:
+            pv = self.preferred_provider.value
             candidates = [
                 m for m in candidates
-                if self.models[m].provider == self.preferred_provider
+                if self.models[m].provider.value == pv
             ]
 
         # Filter by requirements
@@ -424,7 +437,7 @@ class ModelRouter:
     def get_available_models(self, provider: Optional[Provider] = None) -> list[str]:
         """Get list of available models, optionally filtered by provider."""
         if provider:
-            return [m for m, cfg in self.models.items() if cfg.provider == provider]
+            return [m for m, cfg in self.models.items() if cfg.provider.value == provider.value]
         return list(self.models.keys())
     
     def estimate_cost(
