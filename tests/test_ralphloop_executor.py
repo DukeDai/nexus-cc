@@ -337,3 +337,131 @@ def test_execute_decompose_phase_complex_fallback_to_single():
     # Falls back to single task (empty decomposition)
     assert orch.state == RalphState.PLAN
     assert len(orch.task_queue) >= 1
+
+
+# ─── run_tasks Tests ─────────────────────────────────────────────────────────
+
+class TestRunTasks:
+    """Verify run_tasks() creates orchestrator with speculative planning."""
+
+    def test_run_tasks_empty_returns_empty_list(self):
+        """Empty task list returns [] with no orchestrator created."""
+        from ralphloop.executor import RalphLoopExecutor
+        ex = RalphLoopExecutor(workdir="/tmp/test_run_tasks_empty")
+        results = ex.run_tasks([])
+        assert results == []
+
+    def test_run_tasks_single_task_creates_orchestrator(self):
+        """Single task creates RalphLoop orchestrator and calls run()."""
+        from unittest.mock import MagicMock, patch
+        from ralphloop.executor import RalphLoopExecutor
+        from ralphloop.orchestrator import RalphLoop, RalphLoopMetrics
+
+        ex = RalphLoopExecutor(workdir="/tmp/test_run_tasks_single", enable_tdd=False)
+        mock_result = {
+            "outcome": "completed",
+            "final_state": "COMMIT",
+            "tasks_done": 1,
+            "metrics": RalphLoopMetrics(),
+            "error_log": [],
+        }
+        with patch.object(RalphLoop, "run", return_value=mock_result) as mock_run:
+            results = ex.run_tasks(["fix the typo in README"])
+            mock_run.assert_called_once()
+            assert len(results) == 1
+            assert results[0].success is True
+
+    def test_run_tasks_single_task_speculative_disabled(self):
+        """Single task passes speculative_agent_executor=None (no next task)."""
+        from unittest.mock import MagicMock, patch
+        from ralphloop.executor import RalphLoopExecutor
+        from ralphloop.orchestrator import RalphLoop, RalphLoopMetrics
+
+        ex = RalphLoopExecutor(workdir="/tmp/test_run_tasks_single_no_spec", enable_tdd=False)
+        mock_result = {
+            "outcome": "completed",
+            "final_state": "COMMIT",
+            "tasks_done": 1,
+            "metrics": RalphLoopMetrics(),
+            "error_log": [],
+        }
+        captured_args = {}
+        original_init = RalphLoop.__init__
+        def capture_init(self, *args, **kwargs):
+            captured_args.update(kwargs)
+            return original_init(self, *args, **kwargs)
+
+        with patch.object(RalphLoop, "__init__", capture_init):
+            with patch.object(RalphLoop, "run", return_value=mock_result):
+                ex.run_tasks(["fix the typo"])
+
+        # Single task: speculative_agent_executor=None
+        assert captured_args.get("speculative_agent_executor") is None
+
+    def test_run_tasks_two_tasks_enables_speculative(self):
+        """Two tasks pass speculative_agent_executor (enables next-task PLAN pre-compute)."""
+        from unittest.mock import MagicMock, patch
+        from ralphloop.executor import RalphLoopExecutor
+        from ralphloop.orchestrator import RalphLoop, RalphLoopMetrics
+
+        ex = RalphLoopExecutor(workdir="/tmp/test_run_tasks_two", enable_tdd=False)
+        mock_result = {
+            "outcome": "completed",
+            "final_state": "COMMIT",
+            "tasks_done": 2,
+            "metrics": RalphLoopMetrics(),
+            "error_log": [],
+        }
+        captured_args = {}
+        original_init = RalphLoop.__init__
+        def capture_init(self, *args, **kwargs):
+            captured_args.update(kwargs)
+            return original_init(self, *args, **kwargs)
+
+        with patch.object(RalphLoop, "__init__", capture_init):
+            with patch.object(RalphLoop, "run", return_value=mock_result):
+                ex.run_tasks(["task A", "task B"])
+
+        # Two tasks: speculative_agent_executor is a callable
+        assert captured_args.get("speculative_agent_executor") is not None
+        assert callable(captured_args.get("speculative_agent_executor"))
+
+    def test_run_tasks_batch_result_count_matches_input(self):
+        """Result list has one ExecutorResult per input task."""
+        from unittest.mock import patch
+        from ralphloop.executor import RalphLoopExecutor
+        from ralphloop.orchestrator import RalphLoop, RalphLoopMetrics
+
+        ex = RalphLoopExecutor(workdir="/tmp/test_run_tasks_count", enable_tdd=False)
+        mock_result = {
+            "outcome": "completed",
+            "final_state": "COMMIT",
+            "tasks_done": 3,
+            "metrics": RalphLoopMetrics(),
+            "error_log": [],
+        }
+        with patch.object(RalphLoop, "run", return_value=mock_result):
+            results = ex.run_tasks(["A", "B", "C"])
+
+        assert len(results) == 3
+
+    def test_run_tasks_aborted_never_marks_tasks_done(self):
+        """Aborted outcome sets all task success=False."""
+        from unittest.mock import patch
+        from ralphloop.executor import RalphLoopExecutor
+        from ralphloop.orchestrator import RalphLoop, RalphLoopMetrics
+
+        ex = RalphLoopExecutor(workdir="/tmp/test_run_tasks_abort", enable_tdd=False)
+        mock_result = {
+            "outcome": "aborted",
+            "final_state": "ABORT",
+            "tasks_done": 0,
+            "metrics": RalphLoopMetrics(),
+            "error_log": ["error 1"],
+        }
+        with patch.object(RalphLoop, "run", return_value=mock_result):
+            results = ex.run_tasks(["A", "B"])
+
+        assert len(results) == 2
+        assert all(r.success is False for r in results)
+

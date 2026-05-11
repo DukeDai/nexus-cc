@@ -30,7 +30,7 @@ def _detect_provider() -> tuple[Provider, str, str, str]:
     if scnet_key and scnet_key.startswith("sk-sp-"):
         os.environ["SCNET_API_KEY"] = scnet_key
         scnet_base = os.environ.get("SCNET_BASE_URL", "https://api.scnet.cn/api/llm/anthropic/v1")
-        scnet_model = os.environ.get("SCNET_MODEL", "MiniMax-M2.7")
+        scnet_model = os.environ.get("SCNET_MODEL", "MiniMax-M2.5")
         return Provider.MINIMAX_CN, scnet_key, scnet_base, scnet_model
 
     # Check Claude settings (CC Switch)
@@ -89,7 +89,7 @@ def _get_model_for_provider(provider: Provider, settings_model: str = "") -> str
     if provider == Provider.OLLAMA:
         return os.environ.get("OLLAMA_MODEL", "llama3")
     if provider == Provider.MINIMAX_CN:
-        return os.environ.get("SCNET_MODEL", "MiniMax-2.5")
+        return os.environ.get("SCNET_MODEL", "MiniMax-M2.5")
     return "claude-sonnet-4-20250514"
 
 

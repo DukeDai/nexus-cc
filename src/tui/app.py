@@ -44,7 +44,8 @@ from src.ralphloop.orchestrator import (
 )
 from src.ralphloop.agent_loop import run_agent_loop, AgentLoopConfig, LoopResult
 from src.ralphloop.implementation_context import ImplementationContext
-from src.llm.client import LLMClient
+from src.llm.client import LLMClient, Provider
+from src.ralphloop.executor import RalphLoopExecutor
 from .state_view import StateView
 from .agent_view import AgentView, AgentStatus
 from .context_view import ContextView
@@ -75,6 +76,76 @@ class NexusTUIState:
     start_time: Optional[datetime] = None
     error_log: list[str] = field(default_factory=list)
     messages: list[str] = field(default_factory=list)
+
+class TUIExecutor:
+    """RalphLoopExecutor adapter for TUI with real streaming output.
+
+    Wraps RalphLoopExecutor._execute_phase to implement the RalphLoop
+    agent_executor signature: (task, phase) -> dict.
+
+    Enables:
+    - Real LLM token streaming to TUI output panel
+    - TDD enforcement (RED→GREEN→REFACTOR loop)
+    - Parallel subagents (Implementer + Reviewer)
+    - MCP bridge integration
+    - WAL + Checkpoint (crash recovery)
+    """
+
+    def __init__(
+        self,
+        workdir: Path | str,
+        llm_client: LLMClient,
+        streaming_callback: Callable[[str], None] | None = None,
+        enable_tdd: bool = True,
+        enable_parallel: bool = True,
+        mcp_bridge: Any = None,
+    ):
+        from pathlib import Path  # local import to avoid module-level TUI dep
+        self._workdir = Path(workdir)
+        self._llm_client = llm_client
+        self._streaming_cb = streaming_callback
+        self._enable_tdd = enable_tdd
+        self._enable_parallel = enable_parallel
+        self._mcp_bridge = mcp_bridge
+        # RalphLoopExecutor shares all state across phases
+        self._executor = RalphLoopExecutor(
+            workdir=self._workdir,
+            llm_provider=Provider.ANTHROPIC,
+            llm_api_key=None,
+            enable_wal=False,           # WAL already handled by RalphLoop
+            enable_checkpoint=False,      # Checkpoint already handled by RalphLoop
+            enable_self_evolution=False,  # SelfEvo handled separately in TUI
+            enable_model_router=False,    # Router managed by TUI LLMClient
+            enable_parallel_subagents=enable_parallel,
+            enable_tdd=enable_tdd,
+            enable_verification_pipeline=True,
+            tool_registry=None,
+            custom_tools=None,
+            mcp_bridge=mcp_bridge,
+            streaming_callback=streaming_callback,
+        )
+
+    def __call__(self, task: dict, phase: RalphState) -> dict:
+        """Execute a RalphLoop phase and stream tokens to TUI.
+
+        This is the agent_executor callback for RalphLoop orchestrator.
+        Streaming chunks arrive via self._streaming_cb (already set up in __init__
+        which passed it through to run_agent_loop → LLM client streaming).
+        """
+        task_type = self._executor._classify_task(task.get("description", ""))
+        result = self._executor._execute_phase(
+            task=task,
+            phase=phase,
+            task_type=task_type,
+        )
+        # NOTE: streaming chunks are already delivered incrementally via
+        # self._streaming_cb (wired to LLM client's complete_streaming).
+        # Do NOT re-emit result["result"] here — it would double-output.
+        return result
+
+
+
+
 
 
 class NexusTUI:
@@ -181,7 +252,7 @@ class NexusTUI:
             on_state_change=self._on_ralph_state_change_wrapper,
             on_escalation=self._on_escalation_wrapper,
             on_warning=self._on_context_warning_wrapper,
-            agent_executor=self._create_agent_executor(),
+            agent_executor=self._tui_executor,  # TUIExecutor: real TDD + parallel + streaming
             on_approval_request=self._on_approval_request_wrapper if self._tty_mode else None,
         )
         self._state.ralphloop = self._ralphloop
@@ -569,103 +640,20 @@ class NexusTUI:
             api_key=api_key,
             base_url=base_url,
         )
-        self._streaming = False
+        self._streaming = True
 
-        # Agent loop config
-        self._agent_config = AgentLoopConfig(
-            max_turns=200,
-            tool_timeout=30,
-            context_window=200_000,
-            stop_on_content=False,
-            streaming=self._streaming,
+        # TUIExecutor: streams LLM output to TUI output panel in real-time.
+        # Shares RalphLoopExecutor._execute_phase for TDD + parallel + MCP logic.
+        self._tui_executor = TUIExecutor(
+            workdir=self.project_path,
+            llm_client=self._llm,
+            streaming_callback=lambda chunk: self._state.messages.append(
+                f"[cyan]{chunk}[/cyan]"
+            ),
+            enable_tdd=True,
+            enable_parallel=True,
+            mcp_bridge=None,
         )
-
-    def _create_agent_executor(self) -> Callable[..., dict[str, Any]]:
-        """Create agent executor that calls real run_agent_loop."""
-
-        def executor(task: dict[str, Any], phase: RalphState) -> dict[str, Any]:
-            """Real agent executor via run_agent_loop."""
-            task_desc = task.get("description", task.get("requirements", "Unknown"))
-            workdir = Path(self.project_path)
-
-            # Update agent view to show active agent
-            role_map = {
-                RalphState.PLAN: AgentRole.SPECIFIER,
-                RalphState.ACT: AgentRole.IMPLEMENTER,
-                RalphState.VERIFY: AgentRole.REVIEWER,
-                RalphState.REFLECT: AgentRole.REVIEWER,
-            }
-            role = role_map.get(phase)
-            if role and hasattr(self, '_agent_view'):
-                self._agent_view.update_agent(
-                    role, status=AgentStatus.ACTIVE, current_task=f"{phase.name}: {task_desc[:40]}"
-                )
-
-            # Build prompt based on phase
-            if phase == RalphState.PLAN:
-                prompt = f"TASK: {task_desc}\n\nWork directory: {workdir}\n\nAnalyze the task and respond with a brief plan."
-            elif phase == RalphState.ACT:
-                prompt = f"TASK: {task_desc}\n\nWork directory: {workdir}\n\nExecute the plan. Use tools to create/modify files."
-            elif phase == RalphState.VERIFY:
-                prompt = f"TASK: {task_desc}\n\nWork directory: {workdir}\n\nVerify the results. Check for errors."
-            elif phase == RalphState.REFLECT:
-                prompt = f"TASK: {task_desc}\n\nWork directory: {workdir}\n\nAnalyze outcomes and capture learnings."
-            else:
-                prompt = task_desc
-
-            # Create fresh context for this execution
-            ctx = ImplementationContext(
-                task=task_desc,
-                messages=[],
-                tool_results=[],
-                test_results=[],
-                error_log=[],
-            )
-
-            try:
-                result: LoopResult = run_agent_loop(
-                    task=prompt,
-                    llm_client=self._llm,
-                    context=ctx,
-                    config=self._agent_config,
-                    workdir=workdir,
-                    tools=None,  # use default tools
-                    streaming_callback=None,
-                    wal=None,
-                    tdd_enforcer=None,
-                )
-
-                # Update agent view
-                if role and hasattr(self, '_agent_view'):
-                    self._agent_view.update_agent(
-                        role,
-                        status=AgentStatus.SUCCESS if result.complete else AgentStatus.ERROR,
-                        last_result=result.final_content[:50] if result.final_content else "",
-                    )
-
-                return {
-                    "success": result.complete,
-                    "error": None if result.complete else "Agent loop incomplete",
-                    "result": result.final_content or "",
-                    "dangerous_commands": self._detect_dangerous(result.tool_calls) if result.tool_calls else [],
-                }
-            except Exception as e:
-                error_str = str(e)
-                # Surface API key errors clearly
-                if "api_key" in error_str.lower() or "authentication" in error_str.lower():
-                    self._state.messages.append(f"[red]API Error:[/red] Set ANTHROPIC_API_KEY env variable")
-                elif "connection" in error_str.lower() or "network" in error_str.lower():
-                    self._state.messages.append(f"[red]Network Error:[/red] {error_str[:60]}")
-                else:
-                    self._state.messages.append(f"[red]Error:[/red] {error_str[:80]}")
-
-                if role and hasattr(self, '_agent_view'):
-                    self._agent_view.update_agent(
-                        role, status=AgentStatus.ERROR, errors=[error_str[:50]]
-                    )
-                return {"success": False, "error": error_str, "result": None}
-
-        return executor
 
     def _detect_dangerous(self, tool_calls: list) -> list[str]:
         """Detect dangerous commands in tool calls."""

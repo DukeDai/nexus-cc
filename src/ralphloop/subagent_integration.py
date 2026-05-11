@@ -159,18 +159,21 @@ class SubagentIntegration:
         spec_md: str | None = None,
         constraints: list[str] | None = None,
         max_turns: int = 15,
+        enable_tdd: bool = False,
     ) -> OrchestratedResult:
         """Run ImplementerAgent with ReviewerAgent in parallel.
         
         This is the core RalphLoop ACT pattern:
-            ImplementerAgent (code + TDD)  ─┬─→ RalphLoop REFLECT
-            ReviewerAgent (review)          ─┘
+            ImplementerAgent (code + TDD when enabled) ─┬─→ RalphLoop REFLECT
+            ReviewerAgent (review)                      ─┘
         
         Args:
             task: The implementation task description
             spec_md: Optional SPEC.md content
             constraints: List of constraints (security, performance, etc.)
             max_turns: Max LLM turns for implementer
+            enable_tdd: If True, run ImplementerAgent with TDDEnforcer (RED→GREEN→REFACTOR).
+                       When disabled, ImplementerAgent just implements directly.
         
         Returns:
             OrchestratedResult with primary + parallel results
@@ -205,6 +208,33 @@ class SubagentIntegration:
                     workdir=self.project_root,
                     tools=self._get_tools(),
                 )
+                
+                # ── TDD Enforcement (when enabled) ──────────────────────────────
+                # After initial implementation, run TDD cycle if requested.
+                # This enforces RED→GREEN→REFACTOR before considering ACT complete.
+                tdd_result = None
+                if enable_tdd:
+                    try:
+                        from .tdd_enforcer import TDDEnforcer
+                        tdd = TDDEnforcer()
+                        tdd_result = tdd.run_cycle(
+                            llm_client=self._get_llm_client(),
+                            messages=list(impl_context.messages),
+                            task=task,
+                        )
+                        if not tdd_result.success:
+                            # TDD failure → ACT failure (ESCALATE)
+                            return SubagentResult(
+                                task_id=task_id, role="implementer", status="error",
+                                tool_calls=result.tool_calls, turns=result.turns,
+                                output=f"TDD {tdd_result.final_phase.name} failed: {tdd_result.final_test_output[:200]}",
+                                summary=f"TDD {tdd_result.final_phase.name}: {tdd_result.debug_output[:100]}",
+                                duration_seconds=time.time()-start,
+                            )
+                    except Exception as e:
+                        return SubagentResult(task_id=task_id, role="implementer", status="error",
+                                             output=f"TDD error: {e}", duration_seconds=time.time()-start)
+                
                 return SubagentResult(
                     task_id=task_id, role="implementer", status="complete" if result.complete else "error",
                     tool_calls=result.tool_calls, turns=result.turns,

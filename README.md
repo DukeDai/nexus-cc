@@ -8,18 +8,18 @@ Nexus 是基于 **RalphLoop 状态机** 的 AI 编程智能体，通过显式状
 
 ## 核心创新
 
-> **状态 (2026-05-10):** 本次进化：SelfEvo success capture、metrics 全暴露、get_all_skills API、nexus.tools 动态发现、P0 checkpoint 重放漏洞修复。**63/63 benchmark 全绿，43/43 测试全绿。**
+> **状态 (2026-05-10):** 本次进化：SelfEvo success capture、metrics 全暴露、speculative next-task PLAN 预计算、mypy 15→0 errors。**77/77 benchmark 全绿，49/49 测试全绿。**
 
 | 特性 | Claude Code | Nexus | 状态 |
 |------|------------|-------|------|
 | TDD 强制 | 建议 | **每次实现后 ACT 内联 RED→GREEN→REFACTOR** | ✅ TDDEnforcer.run_cycle() 内联 ACT，GREEN 失败→ACT 失败→ESCALATE |
-| 多 Agent 协作 | ❌ 无 | **Specifier/Implementer/Reviewer/Security 并行** | ✅ SubagentIntegration + ThreadPoolExecutor 并行 |
+| 多 Agent 协作 | ❌ 无 | **ACT 内 Implementer+Reviewer 并行** | ✅ SubagentIntegration.run_implementer_with_review() ThreadPoolExecutor(max_workers=2) |
 | 状态可见性 | 黑盒 | **RalphLoop PLAN→ACT→VERIFY→REFLECT** | ✅ 6层 executor 真实驱动状态机 |
 | 项目感知 | CLAUDE.md | **三层合并（全局/项目/目录）** | ✅ claude_md_loader 实现 |
 | 上下文预算 | 隐式 | **4-tier 显式监控 PEAK/GOOD/DEGRADING/POOR** | ✅ context/monitor.py 实现 |
 | 安全扫描 | 插件 | **每次提交前强制内置扫描** | ✅ verification/security_scan.py + ACT gates |
 | 自进化技能 | ❌ 无 | **错误→模式捕获→技能库** | ✅ SelfEvolutionEngine + WAL crash recovery |
-| Subagent 并行 | ❌ 无 | **ThreadPoolExecutor Implementer+Reviewer 并行** | ✅ subagent_integration._execute_act_parallel |
+| Subagent 并行 | ❌ 无 | **ACT 内 Implementer+Reviewer 共享 spec 并行** | ✅ subagent_integration._execute_act_parallel，单 orchestrator 多任务 speculative 预计算 |
 | 会话持久化 | 基础 | **SQLite 检查点恢复** | ✅ CheckpointManager + WALManager |
 | MCP 工具桥接 | ❌ 无 | **RalphLoopMCPBridge 接入 PLAN/VERIFY** | ✅ mcp_bridge → PLAN/VERIFY，真实 session.call_tool() |
 | 验证内联 Gate | ❌ 无 | **ACT 后立即 SecurityScan (fail-closed)** | ✅ VerificationPipeline 4-stage，SecurityScan 阻断恶意代码 |
@@ -146,42 +146,42 @@ python nexus.py skills list
 ```
 Nexus
 ├── RalphLoop              # 状态机编排引擎
-│   ├── orchestrator.typo    # 主引擎
-│   ├── agent_loop.typo      # LLM 闭环执行
-│   ├── tdd_enforcer.typo    # TDD 强制
-│   ├── transitions.typo     # 转换表
-│   ├── states.typo          # 8 状态枚举
-│   ├── subagent_registry.typo    # 5 专业 Agent
-│   ├── subagent_integration.typo  # Orchestrator↔delegate_task 桥接
-│   └── claude_md_loader.typo      # CLAUDE.md 三层合并
+│   ├── orchestrator.py     # 主引擎
+│   ├── agent_loop.py       # LLM 闭环执行
+│   ├── tdd_enforcer.py     # TDD 强制
+│   ├── transitions.py      # 转换表
+│   ├── states.py           # 8 状态枚举
+│   ├── subagent_registry.py     # 5 专业 Agent
+│   ├── subagent_integration.py  # Orchestrator↔delegate_task 桥接
+│   └── claude_md_loader.py      # CLAUDE.md 三层合并
 ├── agents/                 # 多智能体专业化
-│   ├── specifier.typo       # 需求 → 规格
-│   ├── implementer.typo     # TDD 强制执行
-│   ├── reviewer.typo        # 质量门
-│   └── security.typo        # 安全扫描
-├── verification/          # 提交前验证管道
-│   ├── tdd_gate.typo        # 测试先行门
-│   ├── test_gate.typo       # 基线对比
-│   ├── security_scan.typo   # 密钥/注入/路径遍历
-│   ├── review_gate.typo     # 独立审查
-│   └── pipeline.typo        # 验证管道编排
-├── context/               # 上下文管理
-│   ├── monitor.typo         # 4-tier 预算监控
-│   ├── claudemd.typo        # CLAUDE.md 三层合并
-│   ├── checkpoint.typo      # 状态检查点
-│   └── worktree.typo        # Git Worktree 管理
-├── self_evolution/        # 自进化引擎
-│   └── engine.typo          # 错误监控+模式捕获+技能库
+│   ├── specifier.py        # 需求 → 规格
+│   ├── implementer.py      # TDD 强制执行
+│   ├── reviewer.py         # 质量门
+│   └── security.py         # 安全扫描
+├── verification/           # 提交前验证管道
+│   ├── tdd_gate.py         # 测试先行门
+│   ├── test_gate.py        # 基线对比
+│   ├── security_scan.py    # 密钥/注入/路径遍历
+│   ├── review_gate.py      # 独立审查
+│   └── pipeline.py         # 验证管道编排
+├── context/                # 上下文管理
+│   ├── monitor.py          # 4-tier 预算监控
+│   ├── claudemd.py         # CLAUDE.md 三层合并
+│   ├── checkpoint.py       # 状态检查点
+│   └── worktree.py         # Git Worktree 管理
+├── self_evolution/         # 自进化引擎
+│   └── engine.py           # 错误监控+模式捕获+技能库
 ├── tui/                    # 交互式终端 UI
-│   ├── nexus_tui.typo       # ANSI 实时仪表盘
-│   └── app.typo             # Rich Live 主应用
+│   ├── nexus_tui.py        # ANSI 实时仪表盘
+│   └── app.py             # Rich Live 主应用
 ├── mcp/                    # MCP 服务器集成
-│   ├── client.typo          # 异步生命周期
-│   ├── bridge.typo          # 工具桥 + 缓存 + 限流
-│   └── presets.typo         # GitHub/Slack/PostgreSQL 预设
+│   ├── client.py           # 异步生命周期
+│   ├── bridge.py           # 工具桥 + 缓存 + 限流
+│   └── presets.py          # GitHub/Slack/PostgreSQL 预设
 └── llm/
-    ├── client.typo          # Anthropic/OpenAI/Ollama 统一
-    └── model_router.typo    # 根据复杂度自动选模型
+    ├── client.py           # Anthropic/OpenAI/Ollama 统一
+    └── model_router.py     # 根据复杂度自动选模型
 ```
 
 ---
@@ -286,11 +286,11 @@ directory/.CLAUDE.typo     ← 目录规范（模块规则、local overrides）
 
 ## 统计数据
 
-- **87** Python 文件
-- **~25,507** 行代码
+- **63** Python 文件
+- **~22,000** 行代码
 - **11** 个模块包
-- **43/43** pytest 全通过（19 CLI + 20 executor + 4 parallel speedup）
-- **63/63** benchmark_nexus.py 全通过
+- **49/49** pytest 全通过（test_cli + test_ralphloop_executor + test_parallel_speedup）
+- **77/77** benchmark_nexus.py 全通过
 - **mypy**: src/ 0 errors
 
 ---

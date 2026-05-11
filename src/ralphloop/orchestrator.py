@@ -17,10 +17,12 @@ from __future__ import annotations
 import time
 import json
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from pathlib import Path
+from threading import Lock
 from typing import Callable, Optional, Any
 
 from .states import RalphState
@@ -187,6 +189,7 @@ class RalphLoop:
         on_warning: Optional[Callable[[ContextTier, str], None]] = None,
         agent_executor: Optional[Callable[..., dict[str, Any]]] = None,
         on_approval_request: Optional[Callable[[str, str, dict], bool]] = None,
+        speculative_agent_executor: Optional[Callable[..., dict[str, Any]]] = None,
     ):
         """Initialize RalphLoop orchestrator.
 
@@ -200,6 +203,10 @@ class RalphLoop:
             agent_executor: Callable(task, phase) -> result dict.
             on_approval_request: Callback(approval_type, description, details) -> bool.
                                Called before COMMIT to request user approval.
+            speculative_agent_executor: Background executor for next-task PLAN
+                while current ACT is running. Signature same as agent_executor.
+                When provided, enables speculative planning to overlap
+                next-task PLAN with current-task ACT execution.
         """
         self.task_queue = task_queue
         self.context_monitor = context_monitor
@@ -209,6 +216,7 @@ class RalphLoop:
         self.on_warning = on_warning
         self.agent_executor = agent_executor or self._default_agent_executor
         self.on_approval_request = on_approval_request
+        self.speculative_agent_executor = speculative_agent_executor
 
         self.state: RalphState = RalphState.PLAN
         self.task_index: int = 0
@@ -220,6 +228,10 @@ class RalphLoop:
         self._last_context_tier: ContextTier = ContextTier.PEAK
         self._context_threshold_approved: bool = False  # True once user approves DEGRADING
         self._pending_dangerous_commands: list[str] = []
+        # Speculative planning state
+        self._speculative_future: Any = None
+        self._speculative_lock: Lock = Lock()
+        self._speculative_spec: str | None = None  # Cached next-task spec
 
         # Validate checkpoint dir exists
         if self.checkpoint_dir:
@@ -382,6 +394,10 @@ class RalphLoop:
                 return TransitionTrigger.VERIFICATION_FAILED  # reuse — triggers retry or escalation
 
         elif self.state == RalphState.PLAN:
+            # Use pre-computed spec from speculative planning if available
+            if self._speculative_spec is not None:
+                task = {**task, "spec_md": self._speculative_spec}
+                self._speculative_spec = None  # Consume the cached spec
             result = self.agent_executor(task, RalphState.PLAN)
             if result.get("success"):
                 self.retry_count = 0  # Reset on successful plan
@@ -391,6 +407,8 @@ class RalphLoop:
                 return TransitionTrigger.VERIFICATION_FAILED
 
         elif self.state == RalphState.ACT:
+            # Start speculative planning BEFORE executor runs — overlaps with ACT execution
+            self._speculative_start(task)
             result = self.agent_executor(task, RalphState.ACT)
             if result.get("success"):
                 return TransitionTrigger.IMPLEMENTATION_COMPLETE
@@ -458,6 +476,43 @@ class RalphLoop:
             return TransitionTrigger.ALL_TASKS_COMPLETE
 
         return TransitionTrigger.VERIFICATION_FAILED
+
+    # ─── Speculative Planning ─────────────────────────────────────────────────
+
+    def _speculative_start(self, current_task: dict[str, Any]) -> None:
+        """Launch background PLAN for next task while current ACT runs.
+
+        Called at the start of ACT. Spawns a background thread that runs
+        the next task's PLAN phase, caching the resulting spec so it's
+        ready when we reach the next task's PLAN state.
+        """
+        spec_exec = self.speculative_agent_executor
+        if spec_exec is None:
+            return
+
+        next_index = self.task_index + 1
+        if next_index >= len(self.task_queue):
+            return  # No next task
+
+        next_task = self.task_queue[next_index]
+
+        with self._speculative_lock:
+            # Cancel any in-progress speculative work
+            self._speculative_spec = None
+
+            def background_plan() -> None:
+                try:
+                    result = spec_exec(next_task, RalphState.PLAN)
+                    if result.get("success"):
+                        spec = result.get("spec_md", "")
+                        with self._speculative_lock:
+                            self._speculative_spec = spec
+                except Exception:
+                    pass  # Silently ignore speculative failures
+
+            pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speculative_")
+            pool.submit(background_plan)
+            pool.shutdown(wait=False)
 
     def run(self) -> dict[str, Any]:
         """Execute the RalphLoop state machine.

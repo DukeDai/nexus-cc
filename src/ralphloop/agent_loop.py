@@ -610,15 +610,6 @@ def run_agent_loop(
     tools = tools or TOOL_DEFINITIONS
     workdir = workdir or Path.cwd()
 
-    # Initialize ModelRouter for dynamic model selection
-    if model_router is None:
-        try:
-            from ..llm.model_router import ModelRouter
-            model_router = ModelRouter()
-        except ImportError:
-            from llm.model_router import ModelRouter
-            model_router = ModelRouter()
-
     # Initialize Self-Evolution engine on context (if not already set)
     if not hasattr(context, "_evolution_engine") or context._evolution_engine is None:
         try:

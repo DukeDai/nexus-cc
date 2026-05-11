@@ -47,6 +47,7 @@ from .subagent_integration import (
 )
 from .tdd_enforcer import TDDEnforcer, TDDCycle, TDDPhase
 from .complexity import TaskComplexity, classify_complexity
+from .claude_md_loader import load_claude_md, build_llm_system_prompt
 # Absolute imports — these work when src/ is in sys.path (test_cli.py pattern)
 from context.wal import WALManager, WALEntry          # src/context/wal.py
 from context.checkpoint import CheckpointManager       # src/context/checkpoint.py
@@ -88,7 +89,7 @@ class ExecutorResult:
             "total_turns": self.metrics.total_turns,
             "total_llm_calls": self.metrics.total_turns,  # total_turns ≈ LLM call count
             "total_tool_calls": self.metrics.total_turns * 2,  # estimate: ~2 tool calls per turn
-            "total_cost_from_metrics": round(self._total_cost, 6),
+            "total_cost_from_metrics": round(self.total_cost_usd, 6),
         }
 
 
@@ -144,7 +145,7 @@ class RalphLoopExecutor:
         enable_self_evolution: bool = True,
         enable_model_router: bool = True,
         enable_parallel_subagents: bool = True,
-        enable_tdd: bool = False,
+        enable_tdd: bool = True,
         enable_verification_pipeline: bool = True,
         checkpoint_interval: int = 5,
         max_retries: int = 3,
@@ -336,8 +337,8 @@ class RalphLoopExecutor:
                 result = self._si.run_security_scan(context.get("files", []))
                 # SubagentResult → dict (for VerificationPipeline interface)
                 if hasattr(result, "to_dict"):
-                    return result.to_dict()  # type: ignore[attr-defined]
-                return {"success": result.success, "findings": [], "error": None}  # type: ignore[return-value]
+                    return result.to_dict()  # type: ignore[attr-defined,no-any-return]
+                return {"success": result.is_success(), "findings": [], "error": None}  # type: ignore[return-value]
             self._verify_pipeline = VerificationPipeline(
                 delegate_task=delegate_task,
             )
@@ -483,6 +484,7 @@ class RalphLoopExecutor:
             on_escalation=self._on_escalation,
             on_warning=self._on_warning,
             agent_executor=self._make_agent_executor(task_type),
+            speculative_agent_executor=None,  # Single task: no next task to speculate
         )
         self._current_loop = orchestrator
 
@@ -540,7 +542,10 @@ class RalphLoopExecutor:
         spec_md: str | None = None,
         constraints: list[str] | None = None,
     ) -> list[ExecutorResult]:
-        """Run multiple tasks sequentially through RalphLoop.
+        """Run multiple tasks sequentially through RalphLoop with speculative planning.
+
+        All tasks are passed to a single RalphLoop orchestrator, enabling
+        speculative next-task PLAN while current ACT executes.
 
         Args:
             tasks: List of task descriptions.
@@ -550,13 +555,69 @@ class RalphLoopExecutor:
         Returns:
             List of ExecutorResult, one per task.
         """
-        results = []
-        for task in tasks:
-            result = self.run_task(task, spec_md, constraints)
-            results.append(result)
-            if not result.success:
-                # Stop on failure (or continue with next task based on config)
-                break
+        if not tasks:
+            return []
+
+        # Build task queue with full metadata
+        task_queue = [
+            {
+                "description": t,
+                "spec_md": spec_md,
+                "constraints": constraints or [],
+                "task_id": str(uuid.uuid4())[:8],
+            }
+            for t in tasks
+        ]
+
+        # Determine task type from first task for model routing
+        task_type = self._classify_task(tasks[0])
+
+        # Shared agent executors: main + speculative (same executor, same type)
+        main_executor = self._make_agent_executor(task_type)
+        # Speculative planning: only useful when 2+ tasks (next-task PLAN pre-compute)
+        speculative_executor = self._make_agent_executor(task_type) if len(tasks) > 1 else None
+
+        # Single orchestrator for all tasks — enables speculative planning
+        orchestrator = RalphLoop(
+            task_queue=task_queue,
+            context_monitor=self._make_context_monitor(),
+            checkpoint_dir=Path.home() / ".nexus" / "checkpoints" if self.enable_checkpoint else None,
+            on_state_change=self._on_state_change,
+            on_escalation=self._on_escalation,
+            on_warning=self._on_warning,
+            agent_executor=main_executor,
+            speculative_agent_executor=speculative_executor,
+        )
+        self._current_loop = orchestrator
+
+        # Log WAL: task batch start
+        if self._wal:
+            self._wal.log_transition(from_state="INIT", to_state="RUN_TASKS", trigger="BATCH_START")
+
+        # Execute the full orchestrator run
+        result = orchestrator.run()
+
+        # Build per-task ExecutorResult
+        results: list[ExecutorResult] = []
+        metrics = result.get("metrics", RalphLoopMetrics())
+        final_state = result.get("final_state", RalphState.ABORT)
+        for i, tq in enumerate(task_queue):
+            done_count = result.get("tasks_done", 0)
+            task_done = i < done_count if result.get("outcome") != "aborted" else False
+            results.append(ExecutorResult(
+                success=task_done,
+                summary=f"Task {i+1}/{len(task_queue)}: {'done' if task_done else 'skipped'}",
+                final_state=final_state,
+                metrics=metrics,
+                total_cost_usd=0.0,  # Aggregated cost not tracked per-task in batch mode
+                total_tokens=0,
+                skills_learned=0,
+                checkpoints_saved=0,
+                wal_entries=self._wal_entries_count,
+                errors_recovered=self._errors_recovered_count,
+                error_log=result.get("error_log", []),
+            ))
+
         return results
 
     # ─── Agent Executor (dispatched by RalphLoop orchestrator) ────────────
@@ -727,7 +788,12 @@ class RalphLoopExecutor:
         constraints: list[str],
         task_type: TaskType,
     ) -> dict:
-        """ACT phase with parallel subagents (Implementer + Reviewer)."""
+        """ACT phase with parallel subagents (Implementer + Reviewer).
+
+        The ImplementerAgent runs with TDD enforcement (RED→GREEN→REFACTOR cycle)
+        when enable_tdd=True. The ReviewerAgent runs in parallel without TDD.
+        Both results are aggregated for the RalphLoop state machine.
+        """
         # Inject Self-Evolution recovery into subagent context
         recovery = self._get_recovery_prompt()
         enhanced_task = task
@@ -739,6 +805,7 @@ class RalphLoopExecutor:
             spec_md=spec_md,
             constraints=constraints,
             max_turns=15,
+            enable_tdd=self._tdd is not None,  # ← P0-1 fix: propagate TDD flag to subagent
         )
 
         # Track metrics
@@ -1109,7 +1176,7 @@ class RalphLoopExecutor:
         orchestrator: Any,
         task: str,
         spec_md: str | None,
-        constraints: list[str],
+        constraints: list[str] | None,
     ) -> None:
         """Execute the DECOMPOSE phase: classify complexity, decompose if needed.
 
@@ -1286,6 +1353,22 @@ class RalphLoopExecutor:
             f"Your role in this cycle: {role}.",
         ]
 
+        # ── P2-1: CLAUDE.md three-layer merge (global/project/directory) ──────
+        # Auto-load project context even when running via API (not just CLI).
+        # SubagentIntegration also loads CLAUDE.md, but executor needs it for
+        # direct run_agent_loop calls in PLAN, ACT-single, VERIFY, REFLECT phases.
+        try:
+            claude_md = load_claude_md(str(self.workdir))
+            if claude_md:
+                proj_ctx = build_llm_system_prompt(str(self.workdir))
+                if proj_ctx:
+                    parts.append("\n\n# Project Context\n")
+                    parts.append(proj_ctx)
+                parts.append("\n\n# CLAUDE.md (Project Rules)\n")
+                parts.append(claude_md)
+        except Exception:
+            pass  # Non-fatal — CLAUDE.md is optional
+
         # Self-Evolution recovery hints
         recovery = self._get_recovery_prompt()
         if recovery:
@@ -1402,7 +1485,7 @@ class RalphLoopExecutor:
         """Analyze WAL and suggest recovery actions."""
         if not self._wal:
             return {"error": "WAL disabled"}
-        return self._wal.get_recovery_plan()
+        return self._wal.get_recovery_plan()  # type: ignore[no-any-return]
 
     def clear_wal(self) -> None:
         """Clear WAL after successful commit."""

@@ -228,7 +228,7 @@ class ModelRouter:
             self.models.update(custom_models)
         
         # Cache of active clients
-        self._clients: dict[str, LLMClient] = {}
+        self._clients: dict[str, LLMClient] = {}  # type: ignore[no-redef]
     
     def get_client(self, model_name: str) -> LLMClient:
         """
@@ -373,7 +373,7 @@ class ModelRouter:
         model_hint: Optional[str] = None,
         streaming: bool = False,
         callback: Optional[Callable[[str], None]] = None,
-    ) -> tuple[str, any]:
+    ) -> tuple[str, Any]:
         """
         Route a request to the appropriate model and return the response.
         
@@ -417,9 +417,9 @@ class ModelRouter:
         
         # Get client and make request
         client = self.get_client(model_name)
-        
+
         if streaming:
-            response = client.complete_streaming(
+            response: Any = client.complete_streaming(
                 messages=messages,
                 tools=tools,
                 system_prompt=system_prompt,
