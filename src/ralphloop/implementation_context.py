@@ -57,6 +57,9 @@ class ImplementationContext:
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     # Self-Evolution: learn from errors and recover
     _evolution_engine: Optional[Any] = field(default=None, repr=False)
+    # Actual token tracking (set from LLM API responses)
+    _actual_tokens_used: int = field(default=0)
+    _model_context_window: int = field(default=200000)  # Default Claude context
 
     def add_message(self, role: str, content: str) -> None:
         """Add a message to the conversation history.
@@ -146,12 +149,17 @@ class ImplementationContext:
     def budget_percent(self) -> float:
         """Current context usage percentage.
 
-        Computed from messages length vs context window.
+        Uses actual token tracking when available (from LLM API responses),
+        falls back to char-based estimation otherwise.
         """
         with self._lock:
+            # Use actual token tracking if available
+            if self._actual_tokens_used > 0:
+                return (self._actual_tokens_used / self._model_context_window) * 100
+
             if self.context_window <= 0:
                 return 0.0
-            # Estimate usage based on accumulated messages
+            # Fallback: estimate usage based on accumulated messages
             # Rough estimate: ~4 chars per token
             total_chars = sum(
                 len(m.get("content", "")) for m in self.messages
@@ -179,6 +187,26 @@ class ImplementationContext:
             self.error_log.append(
                 f"[{datetime.now().isoformat()}] {error}"
             )
+
+    def record_tokens(self, input_tokens: int, output_tokens: int, model_context_window: int | None = None) -> None:
+        """Record actual token usage from LLM API responses.
+
+        Args:
+            input_tokens: Number of input tokens consumed
+            output_tokens: Number of output tokens generated
+            model_context_window: Optional override for context window size.
+                                 Defaults to _model_context_window.
+        """
+        with self._lock:
+            total = input_tokens + output_tokens
+            self._actual_tokens_used += total
+            if model_context_window:
+                self._model_context_window = model_context_window
+
+    def reset_token_tracking(self) -> None:
+        """Reset token tracking (e.g., for new task context)."""
+        with self._lock:
+            self._actual_tokens_used = 0
 
     def get_changed_files(self) -> list[str]:
         """Get list of files modified in this session (git diff --name-only).

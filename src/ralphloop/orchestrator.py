@@ -33,6 +33,11 @@ from .transitions import (
     get_valid_transitions,
     get_abort_transition,
 )
+from .error_isolation import ShadowErrorTracker, ErrorIsolationStrategy
+from .feedback_loop_integration import IntegratedFeedbackLoop
+from .adaptive_reasoning import AdaptiveReasoningEngine
+from .dynamic_reasoning import ReasoningProfile
+from .task_graph import TaskGraph, TaskNode, TaskStatus
 
 
 class ContextTier(Enum):
@@ -190,6 +195,7 @@ class RalphLoop:
         agent_executor: Optional[Callable[..., dict[str, Any]]] = None,
         on_approval_request: Optional[Callable[[str, str, dict], bool]] = None,
         speculative_agent_executor: Optional[Callable[..., dict[str, Any]]] = None,
+        enable_feedback_loop: bool = True,
     ):
         """Initialize RalphLoop orchestrator.
 
@@ -232,6 +238,32 @@ class RalphLoop:
         self._speculative_future: Any = None
         self._speculative_lock: Lock = Lock()
         self._speculative_spec: str | None = None  # Cached next-task spec
+        self._speculative_completed: bool = False   # Track if speculative PLAN finished
+        self._speculative_workers: list = []       # Track speculative worker threads
+        # Error isolation state — passed to ShadowErrorTracker for EVICT strategy
+        self._current_context_messages: list[dict] = []
+        # Error isolation: store failures separately, never pollute context
+        self.error_tracker = ShadowErrorTracker(strategy=ErrorIsolationStrategy.SHADOW)
+        # Feedback loop: dynamic reasoning intensity adjustment
+        self.feedback_loop: Optional[IntegratedFeedbackLoop] = None
+        if enable_feedback_loop:
+            self.feedback_loop = IntegratedFeedbackLoop(
+                reasoning_engine=AdaptiveReasoningEngine()
+            )
+        # Task graph: dependency-aware parallel claiming (replaces flat task_index)
+        self.task_graph = TaskGraph()
+        for i, task in enumerate(task_queue):
+            node = TaskNode(
+                id=task.get("id", f"task-{i}"),
+                description=task.get("description", ""),
+                priority=task.get("priority", 5),
+            )
+            # Set explicit dependencies if declared
+            deps = task.get("dependencies", [])
+            if isinstance(deps, list):
+                for dep_id in deps:
+                    node.dependencies.add(dep_id)
+            self.task_graph.add_task(node)
 
         # Validate checkpoint dir exists
         if self.checkpoint_dir:
@@ -262,12 +294,17 @@ class RalphLoop:
         return self.context_monitor()
 
     def _build_context(self) -> TransitionContext:
-        """Build TransitionContext for guard evaluation."""
+        """Build TransitionContext for guard evaluation.
+
+        Uses ShadowErrorTracker to provide clean decision context —
+        error traces stay isolated, only recovery hints reach the LLM.
+        """
+        error_ctx = self.error_tracker.get_decision_context()
         return TransitionContext(
             retry_count=self.retry_count,
             context_usage_percent=self.context_usage,
             tasks_remaining=len(self.task_queue) - self.task_index,
-            current_error=self.error_log[-1] if self.error_log else None,
+            current_error=error_ctx.recovery_hint,  # Hint only, not full trace
             escalation_options_selected=None,
         )
 
@@ -339,16 +376,56 @@ class RalphLoop:
         except Exception:
             return False
 
-    def _handle_exception(self, exc: Exception) -> None:
+    def _handle_exception(self, exc: Exception, phase: RalphState, tool_calls: list[dict] | None = None) -> None:
         """Handle exception during state execution.
 
-        Records error and increments retry count.
+        Records error in ShadowErrorTracker (isolated from LLM context) and
+        increments retry count. The orchestrator sees only the recovery hint.
         """
-        tb = traceback.format_exc()
-        error_msg = f"[{datetime.now().isoformat()}] {type(exc).__name__}: {exc}\n{tb}"
+        error_msg = f"[{datetime.now().isoformat()}] {type(exc).__name__}: {exc}"
         self.error_log.append(error_msg)
         self.retry_count += 1
         self.metrics.total_retries += 1
+
+        # Populate context messages for EVICT strategy before recording failure
+        if self.error_tracker.strategy == ErrorIsolationStrategy.EVICT:
+            self._current_context_messages = self._get_current_context_snapshot()
+
+        # Record in ShadowErrorTracker — keeps error traces out of LLM context
+        self.error_tracker.record_failure(
+            phase=phase.value,
+            tool_calls=tool_calls or [],
+            error=str(exc),
+            context_messages=self._current_context_messages if self.error_tracker.strategy == ErrorIsolationStrategy.EVICT else None,
+        )
+
+    def _get_current_context_snapshot(self) -> list[dict]:
+        """Capture current LLM-visible messages for potential eviction on error."""
+        if self._current_context:
+            return self._current_context.get_messages_for_llm()
+        return []
+
+    def _notify_feedback(self, event_type: str, phase: RalphState, result: dict) -> None:
+        """Send phase events to feedback loop for reasoning intensity adjustment."""
+        if self.feedback_loop is None:
+            return
+        turn_count = result.get("turn_count", 0)
+        success = result.get("success", False)
+        self.feedback_loop.set_current_phase(phase.value)
+        if event_type == "PHASE_COMPLETE":
+            self.feedback_loop.on_phase_complete(phase.value, turn_count, success)
+        elif event_type == "TASK_FAILED":
+            task_id = result.get("task_id", f"{phase.value}-{self.task_index}")
+            self.feedback_loop.on_task_failed(task_id, result.get("error", "unknown"))
+        # Update context tier in feedback loop
+        self.feedback_loop.on_context_degrading(self.context_usage)
+
+    def _get_current_reasoning_profile(self) -> ReasoningProfile:
+        """Get current reasoning profile from feedback loop for execution guidance."""
+        if self.feedback_loop is None:
+            from .dynamic_reasoning import ReasoningProfile, ReasoningIntensity
+            return ReasoningProfile(intensity=ReasoningIntensity.MODERATE, max_turns=3)
+        return self.feedback_loop.get_current_reasoning_profile()
 
     def _check_context_tier_warnings(self) -> None:
         """Emit warnings and request approval if context tier changes to DEGRADING."""
@@ -390,20 +467,25 @@ class RalphLoop:
             if result.get("success"):
                 return TransitionTrigger.DECOMPOSE_COMPLETE
             else:
-                self._handle_exception(Exception(result.get("error", "Decompose failed")))
+                self._handle_exception(Exception(result.get("error", "Decompose failed")), RalphState.DECOMPOSE)
                 return TransitionTrigger.VERIFICATION_FAILED  # reuse — triggers retry or escalation
 
         elif self.state == RalphState.PLAN:
             # Use pre-computed spec from speculative planning if available
+            planned_spec = self._speculative_spec or task.get("spec_md", "")
             if self._speculative_spec is not None:
                 task = {**task, "spec_md": self._speculative_spec}
                 self._speculative_spec = None  # Consume the cached spec
             result = self.agent_executor(task, RalphState.PLAN)
             if result.get("success"):
                 self.retry_count = 0  # Reset on successful plan
+                # Track plan vs actual for feedback loop
+                actual_spec = result.get("spec_md", task.get("spec_md", ""))
+                if self.feedback_loop:
+                    self.feedback_loop.on_plan_update(planned_spec, actual_spec)
                 return TransitionTrigger.SPEC_VALID
             else:
-                self._handle_exception(Exception(result.get("error", "Plan failed")))
+                self._handle_exception(Exception(result.get("error", "Plan failed")), RalphState.PLAN)
                 return TransitionTrigger.VERIFICATION_FAILED
 
         elif self.state == RalphState.ACT:
@@ -411,9 +493,11 @@ class RalphLoop:
             self._speculative_start(task)
             result = self.agent_executor(task, RalphState.ACT)
             if result.get("success"):
+                self._notify_feedback("PHASE_COMPLETE", RalphState.ACT, result)
                 return TransitionTrigger.IMPLEMENTATION_COMPLETE
             else:
-                self._handle_exception(Exception(result.get("error", "Act failed")))
+                self._notify_feedback("TASK_FAILED", RalphState.ACT, result)
+                self._handle_exception(Exception(result.get("error", "Act failed")), RalphState.ACT)
                 return TransitionTrigger.VERIFICATION_FAILED
 
         elif self.state == RalphState.VERIFY:
@@ -432,10 +516,12 @@ class RalphLoop:
                     return TransitionTrigger.VERIFICATION_FAILED
 
             if result.get("success"):
+                self._notify_feedback("PHASE_COMPLETE", RalphState.VERIFY, result)
                 return TransitionTrigger.VERIFICATION_PASSED
             else:
-                self._handle_exception(Exception(result.get("error", "Verify failed")))
-                if self.retry_count >= self.MAX_RETRIES:
+                self._notify_feedback("TASK_FAILED", RalphState.VERIFY, result)
+                self._handle_exception(Exception(result.get("error", "Verify failed")), RalphState.VERIFY)
+                if self.retry_count > self.MAX_RETRIES:
                     return TransitionTrigger.MAX_RETRIES_EXCEEDED
                 return TransitionTrigger.VERIFICATION_FAILED
 
@@ -480,10 +566,13 @@ class RalphLoop:
     # ─── Speculative Planning ─────────────────────────────────────────────────
 
     def _speculative_start(self, current_task: dict[str, Any]) -> None:
-        """Launch background PLAN for next task while current ACT runs.
+        """Launch competitive background PLAN for next task while current ACT runs.
 
-        Called at the start of ACT. Spawns a background thread that runs
-        the next task's PLAN phase, caching the resulting spec so it's
+        Multiple workers race to complete the next task's PLAN phase.
+        First worker to finish provides the spec; others are cancelled.
+        This reduces latency compared to single speculative worker.
+
+        Called at the start of ACT. Caches the resulting spec so it's
         ready when we reach the next task's PLAN state.
         """
         spec_exec = self.speculative_agent_executor
@@ -499,20 +588,72 @@ class RalphLoop:
         with self._speculative_lock:
             # Cancel any in-progress speculative work
             self._speculative_spec = None
+            self._speculative_completed = False
 
-            def background_plan() -> None:
+            # Cancel existing worker threads
+            for worker in self._speculative_workers:
+                try:
+                    worker.cancel()
+                except Exception:
+                    pass
+            self._speculative_workers.clear()
+
+            def background_plan(worker_id: int) -> None:
+                """Background worker that races to complete PLAN.
+
+                Uses a shared lock to update _speculative_spec on completion.
+                Only the first worker to finish gets to set the spec.
+                """
                 try:
                     result = spec_exec(next_task, RalphState.PLAN)
-                    if result.get("success"):
-                        spec = result.get("spec_md", "")
-                        with self._speculative_lock:
+                    with self._speculative_lock:
+                        # Only set if not already set by another worker
+                        if self._speculative_spec is None and result.get("success"):
+                            spec = result.get("spec_md", "")
                             self._speculative_spec = spec
+                            self._speculative_completed = True
                 except Exception:
                     pass  # Silently ignore speculative failures
 
-            pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speculative_")
-            pool.submit(background_plan)
+            # Launch multiple workers for competitive planning
+            # More workers = higher chance of fast completion, but more resource usage
+            num_workers = min(2, self._get_speculative_worker_count())
+            pool = ThreadPoolExecutor(max_workers=num_workers, thread_name_prefix="speculative_")
+
+            for i in range(num_workers):
+                future = pool.submit(background_plan, i)
+                self._speculative_workers.append(future)
+
             pool.shutdown(wait=False)
+
+    def _get_speculative_worker_count(self) -> int:
+        """Determine how many speculative workers to launch.
+
+        Based on task complexity and context budget.
+        Simple tasks need fewer workers; complex tasks benefit from competition.
+        """
+        if not self.task_queue:
+            return 1
+
+        # Check next task complexity in metadata
+        next_task = self.task_queue[self.task_index + 1] if self.task_index + 1 < len(self.task_queue) else {}
+        complexity = next_task.get("metadata", {}).get("complexity", "MODERATE")
+
+        if complexity == "COMPLEX":
+            return 3  # Complex tasks benefit more from competition
+        elif complexity == "SIMPLE":
+            return 1  # Simple tasks don't need competition
+        return 2  # Default
+
+    def _speculative_get_spec(self) -> Optional[str]:
+        """Get the cached speculative spec if available."""
+        with self._speculative_lock:
+            return self._speculative_spec
+
+    def _speculative_is_ready(self) -> bool:
+        """Check if speculative planning completed."""
+        with self._speculative_lock:
+            return self._speculative_completed and self._speculative_spec is not None
 
     def run(self) -> dict[str, Any]:
         """Execute the RalphLoop state machine.

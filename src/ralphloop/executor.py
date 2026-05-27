@@ -1245,13 +1245,26 @@ class RalphLoopExecutor:
             base_url=self.llm_base_url,
         )
 
-    def _track_usage(self, model_name: str, turns: int) -> None:
-        """Track token usage and cost."""
+    def _track_usage(self, model_name: str, turns: int, input_tokens: int = 0, output_tokens: int = 0) -> None:
+        """Track token usage and cost.
+
+        Args:
+            model_name: Model identifier for cost estimation
+            turns: Number of conversation turns
+            input_tokens: Actual input tokens from API response (optional)
+            output_tokens: Actual output tokens from API response (optional)
+        """
+        # Update context's actual token tracking if available
+        if self._current_context and (input_tokens > 0 or output_tokens > 0):
+            self._current_context.record_tokens(input_tokens, output_tokens)
+
         if not self._router:
             return
-        # Estimate: 500 input + 300 output per turn
-        cost = self._router.estimate_cost(model_name, 500 * turns, 300 * turns)
-        tokens = 800 * turns
+        # Estimate: 500 input + 300 output per turn if not provided
+        in_tok = input_tokens if input_tokens > 0 else 500 * turns
+        out_tok = output_tokens if output_tokens > 0 else 300 * turns
+        cost = self._router.estimate_cost(model_name, in_tok, out_tok)
+        tokens = in_tok + out_tok
         self._total_cost += cost
         self._total_tokens += tokens
 
