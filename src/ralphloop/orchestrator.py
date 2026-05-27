@@ -37,6 +37,7 @@ from .error_isolation import ShadowErrorTracker, ErrorIsolationStrategy
 from .feedback_loop_integration import IntegratedFeedbackLoop
 from .adaptive_reasoning import AdaptiveReasoningEngine
 from .dynamic_reasoning import ReasoningProfile
+from .predictive_intervention import PredictiveInterventionEngine, InterventionType
 from .task_graph import TaskGraph, TaskNode, TaskStatus
 
 
@@ -250,6 +251,8 @@ class RalphLoop:
             self.feedback_loop = IntegratedFeedbackLoop(
                 reasoning_engine=AdaptiveReasoningEngine()
             )
+        # Predictive intervention: predict errors before they occur
+        self._predictive_engine = PredictiveInterventionEngine()
         # Task graph: dependency-aware parallel claiming (replaces flat task_index)
         self.task_graph = TaskGraph()
         for i, task in enumerate(task_queue):
@@ -670,6 +673,13 @@ class RalphLoop:
                 # Check context tier warnings
                 self._check_context_tier_warnings()
 
+                # Predictive intervention: detect error velocity + context budget trends
+                # before crisis occurs, enabling pre-emptive adjustment
+                self._update_predictive_signals()
+                intervention = self._predictive_engine.should_intervene()
+                if intervention.intervention_type != InterventionType.NONE:
+                    self._apply_predictive_intervention(intervention)
+
                 # Checkpoint periodically (after first checkpoint exists)
                 if self._checkpoint_count >= 1 and self.metrics.total_iterations % self.CHECKPOINT_INTERVAL == 0:
                     self._checkpoint()
@@ -763,3 +773,69 @@ class RalphLoop:
         self._last_context_tier = ContextTier.PEAK
         self._context_threshold_approved = False
         self._pending_dangerous_commands = []
+
+    # ─── Predictive Intervention ────────────────────────────────────────────────
+
+    def _update_predictive_signals(self) -> None:
+        """Record current state signals for predictive intervention engine."""
+        # Record error count from error tracker
+        error_ctx = self.error_tracker.get_decision_context()
+        recent_errors = len(error_ctx.recent_failures) if error_ctx.recent_failures else 0
+        self._predictive_engine.record_error(recent_errors)
+
+        # Record context budget usage
+        self._predictive_engine.record_context_budget(self.context_usage)
+
+        # Record current turn as phase duration estimate
+        self._predictive_engine.record_phase_duration(
+            (datetime.now() - self.metrics.start_time).total_seconds() * 1000
+            if self.metrics.start_time else 0
+        )
+
+    def _apply_predictive_intervention(self, intervention) -> None:
+        """Apply a predictive intervention recommendation.
+
+        Maps InterventionType to concrete RalphLoop actions:
+        - ESCALATE_INTENSITY: boost reasoning effort via feedback_loop
+        - PRE_COMPRESS: compress context immediately
+        - REPLAN: trigger re-plan of current task
+        - DECOMPOSE: trigger task decomposition
+        - ESCALATE_HUMAN: notify user that human help is needed
+        """
+        itype = intervention.intervention_type
+        reason = intervention.reason
+
+        if itype == InterventionType.ESCALATE_INTENSITY:
+            # Boost reasoning via feedback loop
+            if self.feedback_loop:
+                self.feedback_loop.on_reasoning_adjust(
+                    lambda fl, sig: sig  # TODO: escalate signal
+                )
+            self.error_log.append(f"Predictive: escalated intensity — {reason}")
+
+        elif itype == InterventionType.PRE_COMPRESS:
+            # Pre-emptively compress context before crisis
+            self._pre_compress_context()
+            self.error_log.append(f"Predictive: pre-compressed context — {reason}")
+
+        elif itype == InterventionType.REPLAN:
+            # Force return to PLAN state for current task
+            if self.state not in (RalphState.PLAN,):
+                self.state = RalphState.PLAN
+                self.error_log.append(f"Predictive: replan triggered — {reason}")
+
+        elif itype == InterventionType.DECOMPOSE:
+            # Force task decomposition
+            if self.state not in (RalphState.DECOMPOSE, RalphState.PLAN):
+                self.state = RalphState.DECOMPOSE
+                self.error_log.append(f"Predictive: decompose triggered — {reason}")
+
+        elif itype == InterventionType.ESCALATE_HUMAN:
+            # Mark that human intervention is needed
+            self.error_log.append(f"Predictive: human intervention needed — {reason}")
+
+    def _pre_compress_context(self) -> None:
+        """Pre-emptively compress context to free budget before crisis."""
+        # Signal the feedback loop to pre-compress
+        if self.feedback_loop:
+            self.feedback_loop.on_context_degrading(self.context_usage)

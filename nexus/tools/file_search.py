@@ -3,6 +3,9 @@
 import fnmatch
 from pathlib import Path
 
+from pathlib import Path
+import fnmatch
+
 from src.engine.registry import BaseTool
 from src.tools.base import ToolResult, ToolStatus
 
@@ -41,3 +44,6 @@ class FileSearchTool(BaseTool):
 
         message = f"Found {len(matches)} file(s):\n" + "\n".join(matches)
         return ToolResult(message=message, success=True, status=ToolStatus.SUCCESS)
+
+    def __call__(self, **kwargs) -> ToolResult:
+        return self.execute(**kwargs)
