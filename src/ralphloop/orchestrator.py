@@ -39,6 +39,7 @@ from .adaptive_reasoning import AdaptiveReasoningEngine
 from .dynamic_reasoning import ReasoningProfile
 from .predictive_intervention import PredictiveInterventionEngine, InterventionType
 from .task_graph import TaskGraph, TaskNode, TaskStatus
+from .task_forest import TaskForest
 
 
 class ContextTier(Enum):
@@ -255,6 +256,8 @@ class RalphLoop:
         self._predictive_engine = PredictiveInterventionEngine()
         # Task graph: dependency-aware parallel claiming (replaces flat task_index)
         self.task_graph = TaskGraph()
+        # Task forest: hierarchical Epic→Story→Task with richer progress tracking
+        self._task_forest = TaskForest()
         for i, task in enumerate(task_queue):
             node = TaskNode(
                 id=task.get("id", f"task-{i}"),
@@ -839,3 +842,9 @@ class RalphLoop:
         # Signal the feedback loop to pre-compress
         if self.feedback_loop:
             self.feedback_loop.on_context_degrading(self.context_usage)
+
+    def get_task_forest_stats(self) -> dict:
+        """Return hierarchical task forest stats for richer progress visibility."""
+        if not hasattr(self, "_task_forest"):
+            return {}
+        return self._task_forest.get_stats()
