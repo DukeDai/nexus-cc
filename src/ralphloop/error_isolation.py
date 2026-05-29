@@ -49,15 +49,19 @@ class ErrorCategory(Enum):
     UNKNOWN = "unknown"
 
 
-# Strategy mapping: error category -> (retries, action)
-ERROR_STRATEGY_MAP: dict[ErrorCategory, tuple[int, str]] = {
-    ErrorCategory.PERMISSION_DENIED: (0, "escalate"),
-    ErrorCategory.RESOURCE_EXHAUSTED: (0, "decompose"),
-    ErrorCategory.TIMEOUT: (2, "retry_with_timeout_extended"),
-    ErrorCategory.ASSERTION_FAILED: (1, "retry_then_decompose"),
-    ErrorCategory.TOOL_CALL_FAILED: (1, "retry_with_alternative"),
-    ErrorCategory.UNKNOWN: (1, "retry_then_escalate"),
+# Strategy mapping: error category -> (retries, action, base_backoff_ms)
+ERROR_STRATEGY_MAP: dict[ErrorCategory, tuple[int, str, int]] = {
+    ErrorCategory.PERMISSION_DENIED: (0, "escalate", 0),
+    ErrorCategory.RESOURCE_EXHAUSTED: (0, "decompose", 0),
+    ErrorCategory.TIMEOUT: (2, "retry_with_timeout_extended", 500),
+    ErrorCategory.ASSERTION_FAILED: (1, "retry_then_decompose", 250),
+    ErrorCategory.TOOL_CALL_FAILED: (1, "retry_with_alternative", 1000),
+    ErrorCategory.UNKNOWN: (1, "retry_then_escalate", 500),
 }
+
+# Backoff limits
+MAX_BACKOFF_MS = 30000
+INITIAL_BACKOFF_MS = 100
 
 
 def classify_error(error: str, tool_calls: list[dict]) -> ErrorCategory:
@@ -120,9 +124,23 @@ class FailedTrajectory:
     causal_analysis: Optional[CausalAnalysisResult] = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     contamination_risk: str = "HIGH"
-    error_category: ErrorCategory = field(default_factory=ErrorCategory.UNKNOWN)
-    strategy_retries: int = 1
-    strategy_action: str = "retry_then_escalate"
+    error_category: ErrorCategory = field(default_factory=lambda: ErrorCategory.UNKNOWN)
+    strategy_retries: int = field(default=1, init=False)
+    strategy_action: str = field(default="retry_then_escalate", init=False)
+    _base_backoff_ms: int = field(default=500, init=False)
+
+    @property
+    def base_backoff_ms(self) -> int:
+        return self._base_backoff_ms
+
+    def compute_backoff(self, attempt: int) -> int:
+        """Compute backoff delay for a given retry attempt.
+
+        Uses exponential backoff: min(base_backoff_ms * 2^attempt, MAX_BACKOFF_MS).
+        """
+        if self._base_backoff_ms == 0:
+            return 0
+        return min(self._base_backoff_ms * (2 ** attempt), MAX_BACKOFF_MS)
 
     def __post_init__(self):
         # Run causal analysis to build error chain
@@ -135,9 +153,10 @@ class FailedTrajectory:
             self.causal_analysis.error_category
         )
 
-        strategy = ERROR_STRATEGY_MAP.get(self.error_category, (1, "retry_then_escalate"))
+        strategy = ERROR_STRATEGY_MAP.get(self.error_category, (1, "retry_then_escalate", 500))
         self.strategy_retries = strategy[0]
         self.strategy_action = strategy[1]
+        self._base_backoff_ms = strategy[2]
 
     def _causal_category_to_enum(self, category: str) -> ErrorCategory:
         """Convert causal analysis category string to ErrorCategory enum."""
@@ -235,21 +254,30 @@ class ShadowErrorTracker:
     context that LLM sees. The orchestrator decides "should we retry?"
     based on metrics, not error traces.
 
+    Optionally wired to SelfEvolutionEngine for cross-session learned recovery.
+
     Usage:
         tracker = ShadowErrorTracker()
         tracker.record_failure(phase="ACT", tool_calls=[...], error="FileNotFound")
         decision = tracker.get_decision_context()  # Clean context for orchestrator
+
+        # With learned recovery integration:
+        from self_evolution import SelfEvolutionEngine
+        se = SelfEvolutionEngine()
+        tracker = ShadowErrorTracker(self_evolution_engine=se)
     """
 
     def __init__(
         self,
-        strategy: ErrorIsolationStrategy = ErrorIsolationStrategy.SHADOW,
-        max_trajectories: int = 50
+        strategy: ErrorIsolationStrategy = ErrorIsolationStrategy.EVICT,  # Changed default to EVICT for stronger isolation
+        max_trajectories: int = 50,
+        self_evolution_engine: Optional["SelfEvolutionEngine"] = None,
     ):
         self.strategy = strategy
         self.max_trajectories = max_trajectories
         self._trajectories: list[FailedTrajectory] = []
         self._phase_errors: dict[str, int] = {}  # Count errors per phase
+        self._self_evolution_engine = self_evolution_engine
 
     @property
     def trajectories(self) -> list[FailedTrajectory]:
@@ -332,6 +360,8 @@ class ShadowErrorTracker:
 
         Main task sees: success/failure + metrics, NOT error traces.
         This is the ONLY thing the orchestrator should use for decisions.
+
+        If SelfEvolutionEngine is wired, includes cross-session learned recovery.
         """
         recent = self._trajectories[-3:]  # Last 3 failures
         recent_failures = len([t for t in recent if t.phase in {"ACT", "VERIFY"}])
@@ -340,6 +370,11 @@ class ShadowErrorTracker:
         last_trajectory = self._trajectories[-1] if self._trajectories else None
         last_category = last_trajectory.error_category if last_trajectory else ErrorCategory.UNKNOWN
 
+        # Get learned recovery from SelfEvolutionEngine if available
+        learned_recovery: Optional[str] = None
+        if last_trajectory and self._self_evolution_engine:
+            learned_recovery = self._self_evolution_engine.get_best_recovery(last_trajectory.error)
+
         # Determine escalation/decompose flags based on error type
         should_escalate = (
             last_category == ErrorCategory.PERMISSION_DENIED or
@@ -347,7 +382,7 @@ class ShadowErrorTracker:
         )
         should_decompose = (
             last_category == ErrorCategory.RESOURCE_EXHAUSTED or
-            last_trajectory.strategy_action == "decompose"
+            (last_trajectory and last_trajectory.strategy_action == "decompose")
         )
 
         # should_retry based on whether we have retries available
@@ -357,7 +392,7 @@ class ShadowErrorTracker:
             trajectory_count=len(self._trajectories),
             recent_failures=recent_failures,
             should_retry=should_retry,
-            recovery_hint=last_trajectory.get_recovery_context().get("recovery_strategy", "unknown") if last_trajectory else None,
+            recovery_hint=learned_recovery or (last_trajectory.get_recovery_context().get("recovery_strategy", "unknown") if last_trajectory else None),
             last_error_phase=last_trajectory.phase if last_trajectory else None,
             last_error_category=last_category,
             should_escalate=should_escalate,

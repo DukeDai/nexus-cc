@@ -51,6 +51,8 @@ class ContextTier(Enum):
     | GOOD        | 30-50%   | Normal operations, prefer frontmatter    |
     | DEGRADING   | 50-70%   | Economize, frontmatter-only, warn user   |
     | POOR        | 70%+     | Emergency, checkpoint and stop          |
+
+    Thresholds can be adjusted per-task-complexity via AdaptiveContextTierConfig.
     """
     PEAK = auto()
     GOOD = auto()
@@ -58,12 +60,23 @@ class ContextTier(Enum):
     POOR = auto()
 
     @classmethod
-    def from_usage(cls, usage_percent: float) -> ContextTier:
-        if usage_percent < 30:
+    def from_usage(cls, usage_percent: float, thresholds: tuple[float, float, float] | None = None) -> ContextTier:
+        """Compute tier from usage percent, optionally with custom thresholds.
+
+        Args:
+            usage_percent: Current context usage (0-100)
+            thresholds: Custom (peak_bound, good_bound, degrading_bound) overrides.
+                       For example, SIMPLE tasks might use (20.0, 40.0, 60.0).
+        """
+        # Default thresholds stored as module-level constant to avoid Enum shadowing
+        _DEFAULT = (30.0, 50.0, 70.0)
+        t = thresholds or _DEFAULT
+        peak_bound, good_bound, degrading_bound = t
+        if usage_percent < peak_bound:
             return cls.PEAK
-        elif usage_percent < 50:
+        elif usage_percent < good_bound:
             return cls.GOOD
-        elif usage_percent < 70:
+        elif usage_percent < degrading_bound:
             return cls.DEGRADING
         else:
             return cls.POOR
@@ -236,6 +249,13 @@ class RalphLoop:
         self._last_context_tier: ContextTier = ContextTier.PEAK
         self._context_threshold_approved: bool = False  # True once user approves DEGRADING
         self._pending_dangerous_commands: list[str] = []
+        # Adaptive context tier: per-complexity thresholds
+        self._context_tier_config: dict[str, tuple[float, float, float]] = {
+            "SIMPLE": (20.0, 40.0, 60.0),    # Tighter bounds
+            "MODERATE": (30.0, 50.0, 70.0), # Default bounds
+            "COMPLEX": (35.0, 55.0, 75.0),  # Looser bounds
+        }
+        self._current_complexity: str = "MODERATE"  # Current task complexity
         # Speculative planning state
         self._speculative_future: Any = None
         self._speculative_lock: Lock = Lock()
@@ -245,7 +265,18 @@ class RalphLoop:
         # Error isolation state — passed to ShadowErrorTracker for EVICT strategy
         self._current_context_messages: list[dict] = []
         # Error isolation: store failures separately, never pollute context
-        self.error_tracker = ShadowErrorTracker(strategy=ErrorIsolationStrategy.SHADOW)
+        # Default changed to EVICT for stronger isolation
+        self.error_tracker = ShadowErrorTracker(strategy=ErrorIsolationStrategy.EVICT)
+        # Wire SelfEvolutionEngine for cross-session learned recovery
+        try:
+            from self_evolution import SelfEvolutionEngine
+            self_evolution = SelfEvolutionEngine()
+            self.error_tracker = ShadowErrorTracker(
+                strategy=ErrorIsolationStrategy.EVICT,
+                self_evolution_engine=self_evolution,
+            )
+        except ImportError:
+            pass  # SelfEvolutionEngine not available — continue without it
         # Feedback loop: dynamic reasoning intensity adjustment
         self.feedback_loop: Optional[IntegratedFeedbackLoop] = None
         if enable_feedback_loop:
@@ -291,8 +322,13 @@ class RalphLoop:
 
     @property
     def context_tier(self) -> ContextTier:
-        """Current context tier based on usage."""
-        return ContextTier.from_usage(self.context_monitor())
+        """Current context tier based on usage and task complexity.
+
+        Uses adaptive thresholds per task complexity (SIMPLE tasks trigger
+        DEGRADING earlier, COMPLEX tasks allow more headroom).
+        """
+        thresholds = self._context_tier_config.get(self._current_complexity, (30.0, 50.0, 70.0))
+        return ContextTier.from_usage(self.context_monitor(), thresholds)
 
     @property
     def context_usage(self) -> float:
@@ -468,6 +504,11 @@ class RalphLoop:
         """
         task = self.task_queue[self.task_index] if self.task_index < len(self.task_queue) else {}
 
+        # Update current complexity for adaptive tier thresholds
+        complexity = task.get("complexity", task.get("metadata", {}).get("complexity", "MODERATE"))
+        if isinstance(complexity, str):
+            self._current_complexity = complexity.upper()
+
         if self.state == RalphState.DECOMPOSE:
             result = self.agent_executor(task, RalphState.DECOMPOSE)
             if result.get("success"):
@@ -525,6 +566,10 @@ class RalphLoop:
                 self._notify_feedback("PHASE_COMPLETE", RalphState.VERIFY, result)
                 return TransitionTrigger.VERIFICATION_PASSED
             else:
+                # VERIFY failure: send PHASE_COMPLETE (success=False) to record outcome
+                # This feeds into AdaptiveReasoningEngine for learning, and triggers
+                # reasoning escalation on next iteration via feedback loop
+                self._notify_feedback("PHASE_COMPLETE", RalphState.VERIFY, {**result, "success": False})
                 self._notify_feedback("TASK_FAILED", RalphState.VERIFY, result)
                 self._handle_exception(Exception(result.get("error", "Verify failed")), RalphState.VERIFY)
                 if self.retry_count > self.MAX_RETRIES:
@@ -808,7 +853,13 @@ class RalphLoop:
         itype = intervention.intervention_type
         reason = intervention.reason
 
-        if itype == InterventionType.ESCALATE_INTENSITY:
+        if itype == InterventionType.COOLDOWN_ACTIVE:
+            # No action needed, but log for observability
+            logger = __import__("logging").getLogger(__name__)
+            logger.debug(f"Predictive intervention suppressed by cooldown: {reason}")
+            return
+
+        elif itype == InterventionType.ESCALATE_INTENSITY:
             # Boost reasoning via feedback loop
             if self.feedback_loop:
                 self.feedback_loop.on_reasoning_adjust(

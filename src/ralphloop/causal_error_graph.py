@@ -157,7 +157,7 @@ def _infer_causal_link_type(
         return CausalLinkType.PERMISSION_ERROR
 
     # Dependency: if earlier failed, later likely failed due to dependency
-    if earlier.metadata.get("success") is False and later_type == "error":
+    if earlier_node.metadata.get("success") is False and later_type == "error":
         return CausalLinkType.DEPENDENCY_FAILURE
 
     # Sequential tool calls with errors

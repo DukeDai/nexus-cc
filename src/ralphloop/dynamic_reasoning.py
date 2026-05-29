@@ -90,11 +90,23 @@ class ReasoningSignals:
     )
 
     def should_preemptively_escalate(self) -> bool:
-        """Predictive check: both error velocity AND plan deviation worsening."""
-        return (
+        """Hybrid check: both trends worsening OR (high error rate + worsening trend).
+
+        This catches slowly accumulating error trends that would escape
+        detection if we only checked trends (low error_rate + worsening velocity).
+        """
+        # Pure trend-based escalation: both trends must be worsening
+        trend_based = (
             self.error_velocity_trend.trend == TrendDirection.WORSENING and
             self.plan_deviation_trend.trend == TrendDirection.WORSENING
         )
+        # Hybrid: high absolute error rate (0.3+) with worsening velocity
+        # This catches slowly accumulating trends before they exceed ERROR_RATE_HIGH
+        hybrid = (
+            self.error_rate > 0.3 and
+            self.error_velocity_trend.trend == TrendDirection.WORSENING
+        )
+        return trend_based or hybrid
 
 
 class DynamicReasoningEngine:

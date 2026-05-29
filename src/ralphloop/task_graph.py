@@ -199,6 +199,7 @@ class TaskGraph:
             "on_fail": [],
             "on_unblock": []
         }
+        self._callback_errors: list[tuple[str, str, Exception]] = []  # NEW: track callback failures
 
     def add_task(self, task: TaskNode) -> None:
         """Add a task to the graph."""
@@ -259,10 +260,19 @@ class TaskGraph:
                 node.starvation_level += 1
 
     def _can_claim(self, node: TaskNode) -> bool:
-        """Check if a node can be claimed (dependencies met)."""
+        """Check if a node can be claimed (dependencies met).
+
+        Recursively checks all transitive dependencies — a task is only
+        claimable when ALL dependencies have COMPLETED status, not just
+        the immediate dependencies.
+        """
         if node.status != TaskStatus.PENDING:
             return False
 
+        return self._all_dependencies_completed(node)
+
+    def _all_dependencies_completed(self, node: TaskNode) -> bool:
+        """Recursively check if all transitive dependencies are COMPLETED."""
         for dep_id in node.all_dependencies:
             dep = self.nodes.get(dep_id)
             if dep is None:
@@ -271,8 +281,10 @@ class TaskGraph:
             if dep.status == TaskStatus.FAILED:
                 return False  # Block: failed dependency must be explicitly re-planned
             if dep.status != TaskStatus.COMPLETED:
+                return False  # Block: dependency not yet completed
+            # Recursively check transitive dependencies
+            if not self._all_dependencies_completed(dep):
                 return False
-
         return True
 
     def get_ready_tasks(self) -> list[TaskNode]:
@@ -333,12 +345,23 @@ class TaskGraph:
             self._callbacks[event].append(callback)
 
     def _fire_callbacks(self, event: str, node: TaskNode) -> None:
-        """Fire all callbacks for an event."""
+        """Fire all callbacks for an event. Collects failures for diagnostics."""
         for cb in self._callbacks.get(event, []):
             try:
                 cb(node)
-            except Exception:
-                pass  # Don't let callbacks break the graph
+            except Exception as e:
+                # Collect instead of silently swallow — enables diagnostics
+                self._callback_errors.append((event, node.id, e))
+                logger = __import__("logging").getLogger(__name__)
+                logger.warning(f"Callback '{event}' failed for node {node.id}: {e}")
+
+    def get_callback_errors(self) -> list[tuple[str, str, Exception]]:
+        """Return collected callback errors for diagnostics."""
+        return self._callback_errors.copy()
+
+    def clear_callback_errors(self) -> None:
+        """Clear collected callback errors."""
+        self._callback_errors.clear()
 
     def get_stats(self) -> dict:
         """Get graph statistics."""

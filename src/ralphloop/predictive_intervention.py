@@ -29,6 +29,7 @@ class TrendDirection(Enum):
 class InterventionType(Enum):
     """Types of predictive interventions."""
     NONE = auto()
+    COOLDOWN_ACTIVE = auto()    # NEW: intervention suppressed by cooldown
     ESCALATE_INTENSITY = auto()      # Increase reasoning effort
     PRE_COMPRESS = auto()            # Compress context before crisis
     REPLAN = auto()                  # Trigger replan
@@ -247,11 +248,11 @@ class PredictiveInterventionEngine:
         self._turn_count += 1
 
         # Check cooldown
-        if (self._turn_count % self._intervention_cooldown_turns) != 0:
-            if self._last_intervention_time:
-                elapsed = (datetime.now() - self._last_intervention_time).total_seconds()
-                if elapsed < 30:  # 30 second cooldown
-                    return Intervention(intervention_type=InterventionType.NONE)
+        cooldown_active = (self._turn_count % self._intervention_cooldown_turns) != 0
+        if cooldown_active and self._last_intervention_time:
+            elapsed = (datetime.now() - self._last_intervention_time).total_seconds()
+            if elapsed < 30:  # 30 second cooldown
+                return Intervention(intervention_type=InterventionType.COOLDOWN_ACTIVE, confidence=0.0)
 
         signals = self.get_prediction_signals()
 
