@@ -15,8 +15,8 @@ from ..agent.events import (
 class ToolOutputPanel(Container):
     """Right-bottom pane: renders the last tool call's I/O.
 
-    Drains ControlChannel._events on a 0.1s interval and updates the
-    Static child in response to ToolCallStarted / ToolCallCompleted.
+    Subscribes to WalkEvents through NexusApp's single dispatcher
+    (no per-panel set_interval — see NexusApp docstring for race details).
     """
 
     DEFAULT_CSS = """
@@ -36,18 +36,10 @@ class ToolOutputPanel(Container):
         yield Static("(no tool calls yet)", id="tool-output")
 
     def on_mount(self) -> None:
-        # Drain walker events ~10x/sec to keep the panel responsive.
-        self.set_interval(0.1, self._drain_events)
+        self.app.subscribe_event(ToolCallStarted, self._handle_event)
+        self.app.subscribe_event(ToolCallCompleted, self._handle_event)
 
     # ------------------------------------------------------------------ events
-
-    def _drain_events(self) -> None:
-        """Pull all currently-queued events from the channel and handle them."""
-        while True:
-            event = self.channel.try_recv_event()
-            if event is None:
-                return
-            self._handle_event(event)
 
     def _handle_event(self, event: WalkEvent) -> None:
         """Dispatch a single WalkEvent to the right Static update."""

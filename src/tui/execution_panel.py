@@ -24,8 +24,8 @@ from ..agent.events import (
 class ExecutionPanel(Container):
     """Right-top pane: streams walker events into a RichLog.
 
-    Drains ControlChannel._events on a 0.1s interval and writes a
-    colorized summary of each event into the RichLog.
+    Subscribes to WalkEvents through NexusApp's single dispatcher
+    (no per-panel set_interval — see NexusApp docstring for race details).
     """
 
     DEFAULT_CSS = """
@@ -48,18 +48,25 @@ class ExecutionPanel(Container):
         yield self.exec_log
 
     def on_mount(self) -> None:
-        # Drain walker events ~10x/sec to keep the log responsive.
-        self.set_interval(0.1, self._drain_events)
+        # Subscribe for every WalkEvent type — the dispatcher fans events
+        # out to subscribers. We subscribe per concrete type so we don't
+        # depend on MRO iteration in the dispatcher.
+        for ev_type in (
+            PlanStarted,
+            StepStarted,
+            ToolCallStarted,
+            ToolCallCompleted,
+            StepCompleted,
+            StepFailed,
+            AskUser,
+            Paused,
+            Resumed,
+            Aborted,
+            PlanCompleted,
+        ):
+            self.app.subscribe_event(ev_type, self._handle_event)
 
     # ------------------------------------------------------------------ events
-
-    def _drain_events(self) -> None:
-        """Pull all currently-queued events from the channel and handle them."""
-        while True:
-            event = self.channel.try_recv_event()
-            if event is None:
-                return
-            self._handle_event(event)
 
     def _handle_event(self, event: WalkEvent) -> None:
         """Dispatch a single WalkEvent to the right RichLog line."""

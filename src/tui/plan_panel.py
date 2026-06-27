@@ -21,8 +21,9 @@ from .step_edit_modal import StepEditModal
 class PlanPanel(Container):
     """Left pane: renders the Plan as a Tree of steps.
 
-    Drains ControlChannel._events on a 0.1s interval and updates the tree
-    in response to PlanStarted / StepStarted / StepCompleted / StepFailed.
+    Subscribes to WalkEvents through NexusApp's single dispatcher
+    (no per-panel set_interval — the dispatcher fixes the multi-panel
+    race that previously dropped events on the floor).
 
     Key bindings dispatch Commands back through the channel so the
     AgentRuntime can react (approve, reject, pause, resume, abort).
@@ -67,18 +68,14 @@ class PlanPanel(Container):
         yield self.plan_tree
 
     def on_mount(self) -> None:
-        # Drain walker events ~10x/sec to keep the tree responsive.
-        self.set_interval(0.1, self._drain_events)
+        # Subscribe to every event type this panel cares about. The
+        # single NexusApp dispatcher delivers events to all subscribers.
+        self.app.subscribe_event(PlanStarted, self._handle_event)
+        self.app.subscribe_event(StepStarted, self._handle_event)
+        self.app.subscribe_event(StepCompleted, self._handle_event)
+        self.app.subscribe_event(StepFailed, self._handle_event)
 
     # ------------------------------------------------------------------ events
-
-    def _drain_events(self) -> None:
-        """Pull all currently-queued events from the channel and handle them."""
-        while True:
-            event = self.channel.try_recv_event()
-            if event is None:
-                return
-            self._handle_event(event)
 
     def _handle_event(self, event: WalkEvent) -> None:
         """Dispatch a single WalkEvent to the right tree mutator."""
