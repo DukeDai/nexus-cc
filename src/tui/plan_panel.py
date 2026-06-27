@@ -1,6 +1,8 @@
 """PlanPanel - Textual Container showing a Plan as a Tree, with key bindings."""
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from textual.binding import Binding
 from textual.containers import Container
 from textual.widgets import Tree
@@ -13,6 +15,7 @@ from ..agent.events import (
     StepStarted,
     WalkEvent,
 )
+from .step_edit_modal import StepEditModal
 
 
 class PlanPanel(Container):
@@ -142,13 +145,58 @@ class PlanPanel(Container):
 
     # ---- stubs: implemented properly in Task 16+ ----
     def action_edit_step(self) -> None:
-        self.app.bell()
+        """Open StepEditModal for the currently focused tree node, then
+        enqueue an EDIT_STEP command carrying the new step on Save."""
+        node = self.plan_tree.cursor_node
+        if node is None or node.data is None:
+            self.app.bell()
+            return
+        step_id = (node.data or {}).get("step_id")
+        plan = getattr(self.app, "_current_plan", None)
+        if not plan or not step_id:
+            self.app.bell()
+            return
+        step = plan.find_step(step_id)
+        if step is None:
+            self.app.bell()
+            return
+
+        def _on_save(new_step) -> None:
+            self.channel._commands.put_nowait(
+                Command(
+                    CommandKind.EDIT_STEP,
+                    payload={
+                        "step_id": new_step.id,
+                        "step": asdict(new_step),
+                    },
+                )
+            )
+
+        self.app.push_screen(StepEditModal(step=step, on_save=_on_save))
 
     def action_delete_step(self) -> None:
-        self.app.bell()
+        """Enqueue a REMOVE_STEP command for the focused step (modal: v1.1)."""
+        node = self.plan_tree.cursor_node
+        if node is None or node.data is None:
+            self.app.bell()
+            return
+        step_id = (node.data or {}).get("step_id")
+        if not step_id:
+            self.app.bell()
+            return
+        self.channel._commands.put_nowait(
+            Command(CommandKind.REMOVE_STEP, payload={"step_id": step_id})
+        )
 
     def action_insert_step(self) -> None:
-        self.app.bell()
+        """Enqueue an INSERT_STEP command (full modal: v1.1)."""
+        plan = getattr(self.app, "_current_plan", None)
+        if plan is None:
+            self.app.bell()
+            return
+        self.channel._commands.put_nowait(
+            Command(CommandKind.INSERT_STEP, payload={"after_step_id": None})
+        )
 
     def action_move_down(self) -> None:
         self.app.bell()
