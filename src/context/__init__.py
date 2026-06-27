@@ -3,7 +3,7 @@
 from .monitor import ContextBudgetMonitor, BudgetTier
 from .claudemd import ClaudeMD, ClaudeMDLoader
 from .worktree import WorktreeManager
-from .wal import WALManager, WALEntry
+from .wal import WALManager
 from .checkpoint import CheckpointManager
 from .working_buffer import WorkingBuffer, BufferInfo
 
@@ -22,7 +22,6 @@ __all__ = [
     "WorktreeManager",
     # WAL protocol
     "WALManager",
-    "WALEntry",
     # Checkpoint
     "CheckpointManager",
     # Working buffer
