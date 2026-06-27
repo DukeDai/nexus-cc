@@ -1,106 +1,57 @@
-"""Bash tool for executing shell commands."""
+"""BashTool - run shell commands with dangerous-pattern detection."""
+from __future__ import annotations
 
+import asyncio
 import re
-import subprocess
-import os
-from typing import Optional
-
-from .base import BaseTool, ToolResult
 
 
-# Dangerous commands that are blacklisted
+class DangerousCommandError(Exception):
+    pass
+
+
 DANGEROUS_PATTERNS = [
-    r"rm\s+-rf\s+/",
-    r"dd\s+if=",
-    r":\(\)\{:\|:&\};:",  # fork bomb
-    r"fork\s+-f",
-    r"mkfs",
-    r"ddof=",
+    r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-?[a-zA-Z]*r[a-zA-Z]*\s+/\s",
+    r"\bmkfs\.",
+    r"\bdd\s+.*of=/dev/",
+    r">\s*/dev/sd[a-z]",
+    r"\bshutdown\b",
+    r"\breboot\b",
+    r":\(\)\s*\{.*\};\s*:",
 ]
 
 
-def _is_dangerous(command: str) -> bool:
-    """Check if a command matches any dangerous pattern."""
-    for pattern in DANGEROUS_PATTERNS:
-        if re.search(pattern, command):
-            return True
-    return False
+class BashTool:
+    name = "Bash"
+    description = "Run a shell command and capture stdout/stderr/exit_code."
+    args_schema = {
+        "type": "object",
+        "properties": {
+            "command": {"type": "string"},
+            "timeout_s": {"type": "integer", "default": 60},
+        },
+        "required": ["command"],
+    }
 
-
-class BashTool(BaseTool):
-    """Tool for executing bash commands safely."""
-
-    name = "bash"
-    description = "Execute bash commands"
-
-    MAX_OUTPUT_SIZE = 50 * 1024  # 50KB
-
-    def execute(self, command: str, timeout: int = 30, cwd: Optional[str] = None) -> ToolResult:
-        """
-        Execute a bash command with security and resource controls.
-
-        Args:
-            command: The command string to execute
-            timeout: Maximum execution time in seconds (default: 30)
-            cwd: Working directory for command execution
-
-        Returns:
-            ToolResult with success status, output data, or error message
-        """
-        # Security check
-        if _is_dangerous(command):
-            return ToolResult(
-                success=False,
-                error="Command blocked: potentially dangerous command detected"
-            )
-
-        # Validate timeout
-        if timeout <= 0:
-            return ToolResult(success=False, error="Timeout must be positive")
-
+    async def execute(self, *, command: str, timeout_s: int = 60) -> dict[str, object]:
+        for pat in DANGEROUS_PATTERNS:
+            if re.search(pat, command):
+                raise DangerousCommandError(f"command matches dangerous pattern: {pat}")
         try:
-            # Validate cwd
-            if cwd and not os.path.isdir(cwd):
-                return ToolResult(success=False, error=f"Working directory does not exist: {cwd}")
-
-            # 安全：使用 shell=False + shlex.split 避免 shell 注入
-            import shlex
-            cmd_list = shlex.split(command) if isinstance(command, str) else command
-            result = subprocess.run(
-                cmd_list,
-                shell=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout,
-                cwd=cwd,
-                text=True,
-                errors="replace",
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-
-            # Output already decoded via text=True
-            stdout = result.stdout
-            stderr = result.stderr
-
-            # Truncate output if needed
-            if len(stdout) > self.MAX_OUTPUT_SIZE:
-                stdout = stdout[:self.MAX_OUTPUT_SIZE] + "\n[OUTPUT TRUNCATED]"
-
-            # Combine output
-            output = stdout
-            if stderr:
-                output += "\n[STDERR]\n" + stderr
-
-            return ToolResult(
-                success=(result.returncode == 0),
-                data={
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "returncode": result.returncode,
-                } if result.returncode == 0 else None,
-                error=output if result.returncode != 0 else None
-            )
-
-        except subprocess.TimeoutExpired:
-            return ToolResult(success=False, error=f"Command timed out after {timeout} seconds")
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return {"exit_code": -1, "stdout": "", "stderr": "timeout"}
+            return {
+                "exit_code": proc.returncode,
+                "stdout": stdout_b.decode("utf-8", errors="replace"),
+                "stderr": stderr_b.decode("utf-8", errors="replace"),
+            }
         except Exception as e:
-            return ToolResult(success=False, error=f"Execution error: {str(e)}")
+            return {"exit_code": -1, "stdout": "", "stderr": str(e)}
