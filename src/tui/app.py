@@ -6,7 +6,9 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Header, Footer
 
 from ..agent.control import ControlChannel
+from .execution_panel import ExecutionPanel
 from .plan_panel import PlanPanel
+from .tool_output_panel import ToolOutputPanel
 
 
 class NexusApp(App):
@@ -32,6 +34,6 @@ class NexusApp(App):
         with Horizontal():
             yield PlanPanel(channel=self.channel, id="plan-pane")
             with Vertical(id="right-pane"):
-                yield Vertical(id="execution-pane")
-                yield Vertical(id="tool-output-pane")
+                yield ExecutionPanel(channel=self.channel, id="execution-pane")
+                yield ToolOutputPanel(channel=self.channel, id="tool-output-pane")
         yield Footer()
