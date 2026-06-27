@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from typing import Any
 
 from .control import CommandKind, ControlChannel, StepResult
@@ -146,8 +147,28 @@ class PlanWalker:
         return StepResult(step_id=step.id, status="done", output=result)
 
     async def _execute_critique_step(self, step: PlanStep) -> StepResult:
-        """Placeholder for Task 9 (CRITIQUE step)."""
-        return StepResult(step_id=step.id, status="done", output=None)
+        """Execute a CRITIQUE step: prompt LLM to self-review the step outcome."""
+        if self._llm is None:
+            raise StepFailure(step.id, "CRITIQUE step requires LLM client")
+        context = step.args.get("context", "")
+        user_msg = (
+            f"Step intent: {step.intent}\n"
+            f"Step context: {context}\n"
+            f"Success criteria: {step.success_criteria}\n"
+            f'Does this step pass? Respond with JSON: {{"passes": bool, "feedback": "..."}}'
+        )
+        response = await self._llm.complete(
+            system="You critique step outcomes.",
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        text = response.content[0].text
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, IndexError, AttributeError) as e:
+            raise StepFailure(step.id, f"CRITIQUE: invalid LLM response: {e}")
+        if not data.get("passes", False):
+            raise StepFailure(step.id, f"CRITIQUE failed: {data.get('feedback', data)}")
+        return StepResult(step_id=step.id, status="done", output=data)
 
     async def _execute_ask_user_step(self, step: PlanStep) -> StepResult:
         """Execute an ASK_USER step: emit AskUser, block for ANSWER_QUESTION command."""
