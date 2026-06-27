@@ -297,7 +297,7 @@ class PromptTemplateRegistry:
     def revert(self, name: str, version: int) -> None: ...
 ```
 
-Stored at `.nexus/prompts/{name}.json`. History append-only; revert writes a new version that copies the target version's prompt.
+Stored at `.nexus/prompts/{name}.json`. History append-only (one file per template, each line is `{version, system_prompt, updated_at, source_episodes, last_updated_walk_count}` JSONL); revert writes a new version that copies the target version's prompt and resets `last_updated_walk_count`.
 
 ### 4.6 VerificationAdapter
 
@@ -468,7 +468,7 @@ nexus session migrate <id>                 # WAL v1 → v2
 nexus role list                             # registered AgentRoles
 nexus role show <role>                      # system_prompt + allowed_tools + tier
 nexus memory warm                           # force rebuild episodic + semantic indexes
-nexus memory stats                          # cache hit rate, entry counts, last WAL sync
+nexus memory stats                          # entry counts, last WAL sync, hits/misses (hit = planner_context() found ≥1 similar past plan with same outcome category)
 nexus memory search <query>                 # semantic search
 nexus skill list                            # loaded skills
 nexus skill apply <name> --step N           # attach skill to step N in current plan
@@ -544,7 +544,7 @@ All new commands follow existing Typer patterns in `src/cli/`.
 | Embedding model unavailable | `SemanticIndex` checks `embedding_fn is None` | Substring search only; no error |
 | Evolver produces bad prompt | Approval gate + schema validation | User rejects; revert via `nexus prompt revert` |
 | Memory cache stale vs WAL | Cache has `last_wal_mtime`; on mismatch, `rebuild()` | Auto-rebuild on warm() |
-| Feedback loop infinite churn | `Evolver` cap: each prompt updates ≤1× per N walks (default N=5) | Skip update if too recent |
+| Feedback loop infinite churn | `Evolver` cap: each `(template_name, version)` pair updates at most once per 5 walks; tracked via `last_updated_walk_count` field on `PromptTemplate` | Skip update if too recent |
 | Compat B breaks a v1.0 user | WAL writes are append-only; v1.1 reads v1 WAL like v1.0 did | Migration is opt-in |
 | Migration fails | `nexus session migrate` catches JSON errors | Refuses to write `_v2`; reports line number |
 | Verifier hangs | `asyncio.wait_for(pipeline.run(), timeout=verifier_timeout_s)` | StepFailed with timeout error |
@@ -594,7 +594,7 @@ All new commands follow existing Typer patterns in `src/cli/`.
 
 **Total: 35 tasks, ~26 working days (5 weeks at sustainable pace).**
 
-Critical path: **A → C → D → F** (15 tasks). Phases B and E can run in parallel with C/D after A lands.
+Critical path: **A → B → C → D → E → F** (all 6 phases sequential due to upstream artifact dependencies). B feeds verifier outcomes into C; C feeds episodic index into D; D produces artifacts that E exposes via CLI/TUI.
 
 ---
 
@@ -609,7 +609,7 @@ Critical path: **A → C → D → F** (15 tasks). Phases B and E can run in par
 | Compat B breaks a v1.0 user mid-upgrade | Low | High | WAL writes are append-only; v1.1 reads v1 WAL exactly like v1.0 did; migration is opt-in |
 | LLM smoke tests flaky due to model behavior | Medium | Medium | Use `model_tier=FAST` for smoke tests where possible; tolerate single-shot failures with retry; skip without API key |
 | TUI panel rendering breaks at small terminal sizes | Low | Low | Min-width assertion in tests; degrade to stacked layout below 120 cols |
-| WAL file grows unbounded | Medium | Medium | Auto-prune entries older than 30 days for non-active plans; keep active plan WAL intact |
+| WAL file grows unbounded | Medium | Medium | Auto-prune entries older than 30 days for plans with status `completed` or `aborted` (queried via `wal.list_plans(status_in=...)`); active plans (status `walking`) keep all entries |
 | Sub-plan step explosion (Planner generates huge sub-plan) | Low | Medium | `max_subplan_steps` per role; sub-plan rejected if exceeds cap |
 | Feedback loop promotes a bad prompt that breaks future plans | Low | High | Approval gate + revert command + per-template rollback history |
 
