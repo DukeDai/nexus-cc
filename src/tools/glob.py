@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from .edit import BaseTool, ToolResult, ToolStatus
+from .base import BaseTool, ToolResult, ToolStatus
 
 
 class GlobTool(BaseTool):

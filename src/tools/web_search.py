@@ -7,7 +7,7 @@ import re
 import subprocess
 from typing import Optional
 
-from .edit import BaseTool, ToolResult, ToolStatus
+from .base import BaseTool, ToolResult, ToolStatus
 
 
 class WebSearchTool(BaseTool):
