@@ -19,7 +19,7 @@ class ToolStatus(Enum):
 @dataclass
 class ToolResult:
     """Structured result from tool execution.
-    
+
     Attributes:
         success: Whether the operation succeeded.
         status: Detailed status enum value.
@@ -42,13 +42,20 @@ class ToolResult:
     created_at: datetime = field(default_factory=datetime.now)
 
     # Backward-compat alias: 'error' param maps to 'message'
-    def __init__(self, success: bool, status: ToolStatus = ToolStatus.SUCCESS,
-                 message: str = "", data: Any = None,
-                 changes: list[dict[str, Any]] = field(default_factory=list),
-                 diff: str = "", conflicts: list[Any] = field(default_factory=list),
-                 metadata: dict[str, Any] = field(default_factory=dict),
-                 created_at: datetime = field(default_factory=datetime.now),
-                 *, error: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        success: bool,
+        status: ToolStatus = ToolStatus.SUCCESS,
+        message: str = "",
+        data: Any = None,
+        changes: list[dict[str, Any]] = field(default_factory=list),
+        diff: str = "",
+        conflicts: list[Any] = field(default_factory=list),
+        metadata: dict[str, Any] = field(default_factory=dict),
+        created_at: datetime = field(default_factory=datetime.now),
+        *,
+        error: Optional[str] = None,
+    ) -> None:
         self.success = success
         self.status = status
         self.message = message or error or ""
@@ -76,14 +83,28 @@ class ToolResult:
 
 @runtime_checkable
 class Tool(Protocol):
-    """Protocol marking a class as a Nexus tool.
-    
-    All tools must have 'name' and 'description' attributes.
-    The 'execute' method signature is intentionally unconstrained
-    since each tool has its own specific arguments.
+    """Protocol defining the interface every tool must satisfy.
+
+    Attributes:
+        name: Unique identifier for the tool.
+        description: Human-readable description of the tool.
+        args_schema: JSON-schema-like dict describing accepted arguments.
     """
+
     name: str
     description: str
+    args_schema: dict[str, Any]
+
+    async def execute(self, **kwargs: Any) -> Any:
+        """Execute the tool with the given keyword arguments.
+
+        Args:
+            **kwargs: Tool-specific arguments matching args_schema.
+
+        Returns:
+            Tool-specific result.
+        """
+        ...
 
 
 # Backward-compat alias
