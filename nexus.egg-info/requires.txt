@@ -1,9 +1,13 @@
-click>=8.1.0
-readchar>=4.0
-rich>=13.0.0
+click>=8.0
+rich>=13.0
+textual>=0.50
+anthropic>=0.40
+pydantic>=2.0
 
 [dev]
-pytest>=7.0
-pytest-asyncio>=0.21
 ruff>=0.1
 mypy>=1.0
+
+[test]
+pytest>=7.0
+pytest-asyncio>=0.21
