@@ -1,0 +1,5 @@
+Screen { layout: vertical; }
+#plan-pane { width: 40%; border: solid green; }
+#right-pane { width: 60%; }
+#execution-pane { height: 50%; border: solid blue; }
+#tool-output-pane { height: 50%; border: solid yellow; }
