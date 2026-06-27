@@ -1,300 +1,182 @@
-# Nexus — 下一代自主编程智能体
+# Nexus — Plan-First Autonomous Coding Agent
 
-Nexus 是基于 **RalphLoop 状态机** 的 AI 编程智能体，通过显式状态转换 + 多 Agent 协作 + TDD 强制，超越 Claude Code 的隐式推理可靠性。
+Nexus is a Claude Code alternative with a **plan-first architecture**: every task becomes an explicit, editable `Plan` of typed `PlanStep`s before any code runs. The PlanWalker executes steps sequentially, pausing at boundaries, persisting checkpoints, and recovering from crashes.
 
-> RalphLoop = Ralph（北极燕鸥 🦅）+ Loop（闭环）— 像 Ralph 一样快速、持久、目标明确地完成编程任务。
-
----
-
-## 核心创新
-
-> **状态 (2026-05-10):** 本次进化：SelfEvo success capture、metrics 全暴露、speculative next-task PLAN 预计算、mypy 15→0 errors。**77/77 benchmark 全绿，49/49 测试全绿。**
-
-| 特性 | Claude Code | Nexus | 状态 |
-|------|------------|-------|------|
-| TDD 强制 | 建议 | **每次实现后 ACT 内联 RED→GREEN→REFACTOR** | ✅ TDDEnforcer.run_cycle() 内联 ACT，GREEN 失败→ACT 失败→ESCALATE |
-| 多 Agent 协作 | ❌ 无 | **ACT 内 Implementer+Reviewer 并行** | ✅ SubagentIntegration.run_implementer_with_review() ThreadPoolExecutor(max_workers=2) |
-| 状态可见性 | 黑盒 | **RalphLoop PLAN→ACT→VERIFY→REFLECT** | ✅ 6层 executor 真实驱动状态机 |
-| 项目感知 | CLAUDE.md | **三层合并（全局/项目/目录）** | ✅ claude_md_loader 实现 |
-| 上下文预算 | 隐式 | **4-tier 显式监控 PEAK/GOOD/DEGRADING/POOR** | ✅ context/monitor.py 实现 |
-| 安全扫描 | 插件 | **每次提交前强制内置扫描** | ✅ verification/security_scan.py + ACT gates |
-| 自进化技能 | ❌ 无 | **错误→模式捕获→技能库** | ✅ SelfEvolutionEngine + WAL crash recovery |
-| Subagent 并行 | ❌ 无 | **ACT 内 Implementer+Reviewer 共享 spec 并行** | ✅ subagent_integration._execute_act_parallel，单 orchestrator 多任务 speculative 预计算 |
-| 会话持久化 | 基础 | **SQLite 检查点恢复** | ✅ CheckpointManager + WALManager |
-| MCP 工具桥接 | ❌ 无 | **RalphLoopMCPBridge 接入 PLAN/VERIFY** | ✅ mcp_bridge → PLAN/VERIFY，真实 session.call_tool() |
-| 验证内联 Gate | ❌ 无 | **ACT 后立即 SecurityScan (fail-closed)** | ✅ VerificationPipeline 4-stage，SecurityScan 阻断恶意代码 |
-| 工具动态发现 | ❌ 无 | **ToolRegistry auto-discover nexus.tools** | ✅ _init_tool_registry() 优先级：registry → custom_tools → TOOL_DEFINITIONS |
+> **Different from Claude Code:** Nexus treats the Plan as a first-class artifact you can review, edit, and approve *before* execution. Every step emits an event; every step is checkpointed; every tool call is observable.
 
 ---
 
-## 安装
+## Why plan-first?
+
+| Aspect | Claude Code | Nexus v1 |
+|--------|-------------|----------|
+| Plan visibility | Implicit in tool sequence | First-class `Plan` object — visible, editable, versioned |
+| User review | Tool-by-tool approval | Whole-plan review before any tool runs |
+| Pause points | Mid-tool only | **Only at step boundaries** — atomic, predictable |
+| Crash recovery | Resume from session | WAL replay + auto-skip completed steps |
+| Edit step intent | Restart conversation | Edit single step in modal → bumps `Plan.version` |
+| Tool output | Log scrollback | Dedicated `ToolOutputPanel` with last I/O |
+
+---
+
+## Install
 
 ```bash
 git clone https://github.com/DukeDai/nexus-cc.git
 cd nexus-cc
-pip install -e .
-pip install readchar>=4.0    # TUI 命令输入支持
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[test]"
 ```
+
+Requires Python ≥ 3.12 and `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) for real LLM calls.
 
 ---
 
-## 配置
+## Quick Start
 
-### 环境变量
+### CLI — one-shot task
 
 ```bash
-# 必须设置
-export ANTHROPIC_API_KEY="***"    # Anthropic API Key
-
-# 可选配置
-export ANTHROPIC_AUTH_TOKEN=***            # 备用认证 Token
-export ANTHROPIC_BASE_URL=""               # API 代理/网关地址
-export ANTHROPIC_MODEL=""                  # 默认 claude-sonnet-4-20250514
-export NEXUS_PROVIDER="anthropic"          # anthropic/openai/ollama
+nexus run --task "在 src/foo.py 加一行注释 '# updated by nexus'"
+nexus run --task "把所有 *.md 文件转为 snake_case 文件名" --workdir ./myproject
 ```
 
----
+This builds a `Plan`, walks it, and writes per-step JSONL checkpoints to `.nexus/wal.jsonl`.
 
-## 快速开始
+### TUI — interactive review and execution
 
 ```bash
-# RalphLoop 任务执行
-python nexus.py run --task "Create a REST API with FastAPI"
+nexus tui
+```
 
-# 交互式 TUI（实时监控 + 交互命令）
-python nexus.py tui -t "Create a REST API with FastAPI" -C /path/to/project
-python nexus.py tui                         # 空队列，仅监控
+Press `n` to enter a task → plan appears in left pane → review steps → press `a` to approve → watch execution live in the right panes.
 
-# 会话管理
-python nexus.py session list
-python nexus.py session resume <session-id>
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ Plan Pane (40%)            │ Execution Pane (50%)                      │
+│  ▼ plan_abc12345           │  ▶ Step 1/3: Read config                 │
+│   ▶ Read config.yml        │  → Read({'path': 'config.yml'})          │
+│   ✓ Update value           │  ✓ Read done                              │
+│   ✓ Write back             │  ✓ Step 1 complete                        │
+│                            ├───────────────────────────────────────────┤
+│                            │ Tool Output Pane (50%)                    │
+│                            │ → Read                                    │
+│                            │ args: {'path': 'config.yml'}             │
+└────────────────────────────────────────────────────────────────────────┘
+```
 
-# MCP / Skills
-python nexus.py mcp list
-python nexus.py mcp presets
-python nexus.py skills list
+### Session — recover or inspect
+
+```bash
+nexus session list                # list plan IDs in WAL
+nexus session resume plan_abc12345 # show last cursor; full resume via TUI
 ```
 
 ---
 
-## TUI 交互命令
+## TUI Key Bindings
 
-| 命令 | 说明 |
-|------|------|
-| `status` | 显示当前状态 |
-| `help` | 显示帮助 |
-| `approve` | 批准当前操作 |
-| `reject` | 拒绝当前操作 |
-| `retry` | 重试当前任务 |
-| `skip` | 跳过当前任务 |
-| `quit` / `exit` | 退出 TUI |
-
-**Approval**：DEGRADING 状态或危险命令时暂停，等待 `approve`/`reject`  
-**Escalation**：重试超限时按 `1=force-merge 2=rewrite 3=abandon 4=decompose`
+| Key | Action | Notes |
+|-----|--------|-------|
+| `n` | New task | Opens input modal |
+| `a` | Approve plan | Begin walking |
+| `r` | Reject plan | Discard |
+| `e` | Edit step | Opens StepEditModal with 6 fields |
+| `d` | Delete step | Fires REMOVE_STEP command |
+| `i` | Insert step | Fires INSERT_STEP command |
+| `J` / `K` | Move step down / up | Reorder |
+| `p` / `P` | Pause / Resume | At next step boundary |
+| `x` | Abort | Immediate |
+| `j` / `k` | Cursor down / up | In tree |
+| `?` | Help | |
+| `ctrl+c` | Quit | |
 
 ---
 
-## RalphLoop 状态机
+## Architecture
 
 ```
-  ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌──────────┐
-  │  PLAN   │───▶│   ACT   │───▶│ VERIFY  │───▶│  REFLECT │
-  └────┬────┘    └────┬────┘    └────┬────┘    └────┬─────┘
-       │              │              │              │
-       ▼              ▼              ▼              ▼
-  ┌─────────┐    ┌─────────┐  ┌─────────┐   ┌─────────┐
-  │ESCALATE │    │ COMMIT  │  │  ABORT  │   │  TRANS  │
-  └─────────┘    └─────────┘  └─────────┘   └─────────┘
+User ──► CLI / TUI ──► ControlChannel (asyncio queues + pause event)
+                              │
+                              ▼
+                     ┌────────────────────┐
+                     │   AgentRuntime     │
+                     │                    │
+                     │  plan() ─► Planner │
+                     │             │      │
+                     │             ▼      │
+                     │   Plan (List[Step])│
+                     │             │      │
+                     │             ▼      │
+                     │  walk() ─► Walker  │
+                     │             │      │
+                     │             ▼      │
+                     │   WALManager.check │
+                     └─────────┬──────────┘
+                               │
+                               ▼
+                     ToolRegistry (8 tools)
 ```
 
-**流转**：PLAN → ACT → VERIFY → REFLECT → (TRANSIT) → PLAN...  
-**升级**：① 自行修复 ② 求助同事 ③ 简化需求 ④ 放弃任务
+**Key components:**
+
+- **`Plan`** (`src/agent/plan.py`) — dataclass with `steps: list[PlanStep]`, `version: int`. Mutating bumps version.
+- **`PlanStep`** — `kind: TOOL | VERIFY | CRITIQUE | ASK_USER`, `tool`, `args`, `success_criteria`, `on_failure`.
+- **`WalkEvent`** (`src/agent/events.py`) — `PlanStarted`, `StepStarted`, `ToolCallStarted`, `ToolCallCompleted`, `StepCompleted`, `StepFailed`, `AskUser`, `Paused`, `Resumed`, `Aborted`, `PlanCompleted`.
+- **`ControlChannel`** (`src/agent/control.py`) — two asyncio queues (`_events`, `_commands`) + `_pause_event`. No callbacks, no locks.
+- **`AgentRuntime`** (`src/agent/runtime.py`) — orchestrates `Planner → PlanWalker → WALManager`, exposes `edit_step / insert_step / remove_step / reorder_steps`.
+- **`NexusApp`** (`src/tui/app.py`) — Textual app; single `_dispatch_events` loop fans events to subscribed panels (avoids multi-panel race).
 
 ---
 
-## TDD 强制循环
+## Tools
 
-```
-用户: "实现登录功能"
-    ↓
-┌──────────────────┐
-│ 1. RED           │ ← 写测试（预期失败）
-└────────┬─────────┘
-         ↓
-┌──────────────────┐
-│ 2. GREEN         │ ← 写实现（最小代码）
-└────────┬─────────┘
-         ↓
-    ┌────┴────┐
-    │ PASS?   │
-    └────┬────┘
-      Y       N
-      ↓       ↓
-  ┌────────┐ ┌──────────────────┐
-  │REFACTOR│ │ DEBUG LOOP(≤3)  │
-  │& COMMIT│ └──────────────────┘
-  └────────┘         ↓ FAIL
-                 ┌─────────┐
-                 │ESCALATE │
-                 └─────────┘
-```
+The bundled `ToolRegistry.with_defaults(workdir=".")` registers 8 built-in tools:
+
+| Tool | Purpose |
+|------|---------|
+| `Read` | Read file contents, optional line range |
+| `Write` | Write content to file, creates parent dirs |
+| `Edit` | Atomic string replacement, single or replace_all |
+| `Bash` | Run shell commands with dangerous-pattern detection |
+| `Glob` | Find files by glob, recursive `**` |
+| `Grep` | Regex search with file:line:content output |
+| `Git` | Safe wrapper over git CLI (whitelist of subcommands) |
+| `WebSearch` | Stub for v1; real impl in v2 |
 
 ---
 
-## 架构
+## Running Tests
 
-```
-Nexus
-├── RalphLoop              # 状态机编排引擎
-│   ├── orchestrator.py     # 主引擎
-│   ├── agent_loop.py       # LLM 闭环执行
-│   ├── tdd_enforcer.py     # TDD 强制
-│   ├── transitions.py      # 转换表
-│   ├── states.py           # 8 状态枚举
-│   ├── subagent_registry.py     # 5 专业 Agent
-│   ├── subagent_integration.py  # Orchestrator↔delegate_task 桥接
-│   └── claude_md_loader.py      # CLAUDE.md 三层合并
-├── agents/                 # 多智能体专业化
-│   ├── specifier.py        # 需求 → 规格
-│   ├── implementer.py      # TDD 强制执行
-│   ├── reviewer.py         # 质量门
-│   └── security.py         # 安全扫描
-├── verification/           # 提交前验证管道
-│   ├── tdd_gate.py         # 测试先行门
-│   ├── test_gate.py        # 基线对比
-│   ├── security_scan.py    # 密钥/注入/路径遍历
-│   ├── review_gate.py      # 独立审查
-│   └── pipeline.py         # 验证管道编排
-├── context/                # 上下文管理
-│   ├── monitor.py          # 4-tier 预算监控
-│   ├── claudemd.py         # CLAUDE.md 三层合并
-│   ├── checkpoint.py       # 状态检查点
-│   └── worktree.py         # Git Worktree 管理
-├── self_evolution/         # 自进化引擎
-│   └── engine.py           # 错误监控+模式捕获+技能库
-├── tui/                    # 交互式终端 UI
-│   ├── nexus_tui.py        # ANSI 实时仪表盘
-│   └── app.py             # Rich Live 主应用
-├── mcp/                    # MCP 服务器集成
-│   ├── client.py           # 异步生命周期
-│   ├── bridge.py           # 工具桥 + 缓存 + 限流
-│   └── presets.py          # GitHub/Slack/PostgreSQL 预设
-└── llm/
-    ├── client.py           # Anthropic/OpenAI/Ollama 统一
-    └── model_router.py     # 根据复杂度自动选模型
+```bash
+# All tests (requires ANTHROPIC_API_KEY only for LLM smoke tests — they skip otherwise)
+PYTHONPATH=./src .venv/bin/python -m pytest tests/ -v
+
+# Just plan-first agent tests
+PYTHONPATH=./src .venv/bin/python -m pytest tests/agent/ tests/integration/ -v
 ```
 
----
-
-## 上下文预算模型
-
-| 层级 | 消耗 | 行为 |
-|------|------|------|
-| **PEAK** | 0-30% | 全速执行复杂推理，并行 Agent |
-| **GOOD** | 30-50% | 正常执行，frontmatter 优先 |
-| **DEGRADING** | 50-70% | 减少探索，聚焦已知路径 |
-| **POOR** | 70-100% | 紧急：检查点保存，建议升级 |
+Test counts (as of v1.0.0):
+- Agent core: 23 tests
+- TUI: 11 tests
+- Tools: 17 tests
+- Integration (plan-review + crash-recovery + CLI): 11 tests
+- WAL: 3 tests
+- LLM smoke: 3 (skipped without API key)
 
 ---
 
-## Subagent 专业分工
+## Roadmap
 
-| Agent | 职责 | 输入 | 输出 |
-|-------|------|------|------|
-| **Specifier** | 需求分析 | 用户任务描述 | SPEC.md / CLAUDE.md 片段 |
-| **Implementer** | 代码生成 | SPEC + 上下文 | 代码 + 工具调用 |
-| **Reviewer** | 质量审查 | 代码 + 测试 | Review 报告 + 修改建议 |
-| **Security** | 安全扫描 | 代码 | 漏洞报告 |
-| **Test** | 测试生成 | SPEC | RED 测试代码 |
+- ✅ **v1.0 (this release)** — Plan/AgentRuntime/ControlChannel/Textual TUI/WAL/8 tools/CLI.
+- ⏳ **v1.1** — Sub-plans, MCP server wiring, model router for multi-provider.
+- 🔮 **v2** — Self-evolution engine return (skill learning from WAL error patterns).
+- 🔮 **v3** — Multi-agent speculative execution (replaces current sequential walker).
 
----
-
-## CLAUDE.md 三层合并
-
-```
-~/.claude/CLAUDE.md      ← 全局规范（工具偏好、安全策略）
-project/CLAUDE.typo        ← 项目规范（架构决策、约定）
-directory/.CLAUDE.typo     ← 目录规范（模块规则、local overrides）
-        ↓
-    build_llm_system_prompt()
-        ↓
-    注入 LLM System Prompt
-```
-
----
-
-## ✅ 已完成功能
-
-**核心架构**
-- [x] RalphLoop 状态机 + orchestrator
-- [x] LLM-driven agent_loop（真正调用 LLM + 工具闭环）
-- [x] TDD Enforcer 完整集成（RED→GREEN→REFACTOR）
-- [x] CLAUDE.md loader（三层合并）
-- [x] SubagentIntegration 并行执行（Implementer + Reviewer ThreadPoolExecutor 并行）
-- [x] Subagent registry（5 种 Agent）
-- [x] verification pipeline（ACT 后自动 security scan + pytest + mypy）
-- [x] MCP bridge + presets + connection lifecycle
-- [x] RalphLoopExecutor 6层统一初始化（WAL/Checkpoint/SelfEvo/ModelRouter/Subagents/TDD）
-- [x] Nexus TUI（Rich 实时仪表盘）
-- [x] CLI 重构（Click 模块化）— 38/38 测试全通过（19 CLI + 19 executor 集成）
-- [x] Model Router — 根据任务复杂度自动选模型
-- [x] Checkpoint 恢复 — 失败后自动从检查点恢复
-- [x] Self-Evolution — 错误监控+模式捕获+技能库
-- [x] Approval/Reject 暂停等待用户输入
-- [x] 工具定义统一 — TOOL_DEFINITIONS 统一导出
-- [x] bash subprocess 安全 — 移除 shell=True + shlex.split
-- [x] 异常处理改进 — 无 `except: pass`
-- [x] WAL crash recovery — WALManager 日志化 + 恢复计划生成
-
-**本次进化 (2026-05-10)**
-- [x] SelfEvo success capture（`analyze_and_capture_success()` 成功模式存储为 LearnedSkill）
-- [x] `get_all_skills()` public API（`SelfEvolutionEngine.get_all_skills()` 替代私有 `_skills_cache` 访问）
-- [x] `ExecutorResult.to_dict()` metrics 暴露（`total_turns`/`total_llm_calls`/`total_tool_calls`/`total_cost_usd`）
-- [x] `nexus.tools` 动态发现（`register_all()` 实现 Protocol 兼容性修复，Python 3.12 下 `issubclass` 对 data member Protocol 报错，改用 `hasattr` 检测）
-- [x] `FileSearchTool` 真实工具（`nexus/tools/file_search.py`，`ToolRegistry` 自动注册并可调用）
-- [x] `load_existing_skills()` 启动时加载（executor init 时调用，从 `~/.hermes/skills/*.md` 加载到 cache）
-- [x] README 核心创新表格更新（TDD 特性从 "prompt-based" 改为 "ACT 内联"，benchmark 59→63）
-
-## ✅ 已完成功能（第二阶段）
-- [x] RalphLoopExecutor 6层统一初始化（WAL/Checkpoint/SelfEvo/ModelRouter/Subagents/TDD）
-- [x] Model Router — 根据任务复杂度自动选模型
-- [x] Checkpoint 恢复 — 失败后自动从检查点恢复
-- [x] Self-Evolution — 错误监控+模式捕获+技能库
-- [x] SubagentIntegration run_specifier/run_security_scan 真实调用
-- [x] agent_loop 巨型函数拆分（_apply_diff 141行 → 4个<60行子函数）
-- [x] RalphLoopMCPBridge 接入 PLAN/VERIFY（`bridge.plan_with_mcp()` / `bridge.verify_with_mcp()`）
-- [x] VerificationPipeline 内联 ACT gate（SecurityScan fail-closed，Lint/Format 非阻断警告）
-- [x] ToolRegistry 动态发现（优先级：registry → custom → TOOL_DEFINITIONS fallback）
-- [x] 并行 Subagent 实测 2.98x speedup（ThreadPoolExecutor max_workers=3，0.3s×3 任务）
-- [x] benchmark_nexus.py 导入修复（nexus_root 路径 + `from enum import member` 错误）
-- [x] venv 重建（Python 3.9 → 3.12 + pytest/mypy 安装）
-
----
-
-## 📊 测试对比 (2026-05-04)
-
-**任务**：创建 Flask REST API（GET/POST/DELETE /todos）
-
-| 工具 | 结果 | 代码行数 |
-|------|------|----------|
-| **Nexus** | ✅ 成功 | 57行 |
-| **Claude Code** | ✅ 成功 | 49行 |
-
-**验证**：GET/POST/DELETE 全部通过
-
----
-
-## 统计数据
-
-- **63** Python 文件
-- **~22,000** 行代码
-- **11** 个模块包
-- **49/49** pytest 全通过（test_cli + test_ralphloop_executor + test_parallel_speedup）
-- **77/77** benchmark_nexus.py 全通过
-- **mypy**: src/ 0 errors
+See `ROADMAP.md` for the full timeline.
 
 ---
 
 ## License
 
-MIT
+MIT — see `LICENSE`.
