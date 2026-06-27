@@ -22,6 +22,7 @@ from ..agent.plan import Plan, PlanStep, PlanStepKind, OnFailure
 from .execution_panel import ExecutionPanel
 from .new_task_modal import NewTaskModal
 from .plan_panel import PlanPanel
+from .recover_modal import RecoverModal
 from .tool_output_panel import ToolOutputPanel
 
 
@@ -40,10 +41,11 @@ class NexusApp(App):
         ("n", "new_task", "New task"),
     ]
 
-    def __init__(self, *, channel: ControlChannel, runtime=None) -> None:
+    def __init__(self, *, channel: ControlChannel, runtime=None, wal=None) -> None:
         super().__init__()
         self.channel = channel
         self.runtime = runtime
+        self._wal = wal
         self._walk_task: asyncio.Task | None = None
         self._current_plan: Plan | None = None
 
@@ -71,6 +73,53 @@ class NexusApp(App):
         self.set_interval(0.05, self._dispatch_events)
         # Single drainer for commands; forwards to runtime mutators.
         self.set_interval(0.05, self._drain_commands)
+        # Defer the WAL recovery check until after compose() finishes so
+        # the modal can mount correctly on top of the regular screen.
+        self.call_after_refresh(self._maybe_offer_recovery)
+
+    async def _maybe_offer_recovery(self) -> None:
+        """If WAL has an unfinished plan, push RecoverModal.
+
+        - No WAL attached -> return.
+        - WAL empty / no recoverable plan -> return.
+        - WAL raises -> silently fall through (broken WAL must not
+          prevent the app from starting).
+        """
+        if self._wal is None:
+            return
+        try:
+            recovered = await self._wal.recover()
+        except Exception:
+            return
+        if recovered is None:
+            return
+        plan, cursor = recovered
+        completed_ids = self._wal.get_completed_step_ids(plan.plan_id)
+        modal = RecoverModal(
+            plan_id=plan.plan_id,
+            completed=len(completed_ids),
+            total=len(plan.steps) or len(completed_ids),
+        )
+        self.push_screen(modal, callback=lambda resume: self._on_recovery_choice(resume, plan))
+
+    def _on_recovery_choice(self, resume: bool, plan: Plan) -> None:
+        """Handle the user's choice from the RecoverModal.
+
+        On resume: set ``_current_plan`` and emit PlanStarted through
+        the channel. The walker auto-skips already-checkpointed steps
+        (per Task 22 / WAL contract). On discard: do nothing (the WAL
+        is intentionally left intact so the user can also manually
+        delete it).
+        """
+        if not resume:
+            return
+        self._current_plan = plan
+        # Use call_next so the emit happens on the next event-loop tick
+        # (after the modal is fully dismissed).
+        self.call_next(self._emit_plan_started, plan)
+
+    async def _emit_plan_started(self, plan: Plan) -> None:
+        await self.channel.emit(PlanStarted(plan=plan))
 
     # ------------------------------------------------------- subscriptions
 
