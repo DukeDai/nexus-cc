@@ -6,7 +6,9 @@ from typing import Any
 from .control import CommandKind, ControlChannel, StepResult
 from .events import (
     AskUser,
+    Paused,
     PlanCompleted,
+    Resumed,
     StepCompleted,
     StepFailed,
     StepStarted,
@@ -61,7 +63,11 @@ class PlanWalker:
         results: list[StepResult] = []
         for idx, step in enumerate(plan.steps):
             # Pause check at step boundary (section 6.3)
-            await self._channel.wait_if_paused()
+            if self._channel.is_paused:
+                next_step_id = plan.steps[idx].id if idx < len(plan.steps) else None
+                await self._channel.emit(Paused(step_id=next_step_id))
+                await self._channel.wait_if_paused()
+                await self._channel.emit(Resumed())
             if self._channel.is_aborted:
                 raise PlanAborted(self._channel.aborted_reason)
 
