@@ -1,52 +1,71 @@
-"""`nexus tui` — Launch interactive TUI."""
-
+"""`nexus tui` — Launch interactive Textual TUI."""
 from __future__ import annotations
 
-import sys
-import uuid
+import os
 from pathlib import Path
-from typing import Callable
 
 import click
 
+from src.agent.control import ControlChannel
+from src.agent.runtime import AgentRuntime
+from src.context.wal import WALManager
+from src.tools.registry import ToolRegistry
+
 
 @click.command()
-@click.option("--task", "-t", help="Initial task description")
 @click.option("--workdir", "-C", type=click.Path(file_okay=False), help="Working directory")
-def tui(task: str | None, workdir: str | None) -> int:
-    """Launch interactive TUI."""
-    try:
-        from tui.app import NexusTUI
-    except ImportError as e:
-        click.echo(f"TUI not available: {e}")
-        click.echo("Run in CLI mode: nexus run --task '...'")
-        return 1
+@click.option("--wal-path", type=click.Path(), help="WAL file path")
+def tui(workdir: str | None, wal_path: str | None) -> int:
+    """Launch interactive Textual TUI."""
+    project_path = Path(workdir or os.getcwd()).expanduser().resolve()
+    wal_file = Path(wal_path).expanduser() if wal_path else (project_path / ".nexus" / "wal.jsonl")
 
-    project_path = Path(workdir).expanduser().resolve() if workdir else Path.cwd()
+    channel = ControlChannel()
+    wal = WALManager(path=wal_file)
+    tools = ToolRegistry.with_defaults(workdir=str(project_path))
 
-    # Build task queue from --task argument
-    if task:
-        task_queue: list[dict[str, object]] = [{
-            "id": f"task_{uuid.uuid4().hex[:8]}",
-            "description": task,
-            "priority": 2,
-        }]
-    else:
-        task_queue = []
-
-    # Context monitor - simple oscillating for demo, real impl would track token usage
-    usage = [25.0, 35.0, 45.0, 55.0, 60.0, 65.0, 50.0, 40.0, 30.0]
-    usage_index = [0]
-    def context_monitor() -> float:
-        val = usage[usage_index[0] % len(usage)]
-        usage_index[0] += 1
-        return val
-
-    app = NexusTUI(
-        task_queue=task_queue,
-        context_monitor=context_monitor,
-        checkpoint_dir=project_path / ".nexus" / "checkpoints",
-        project_path=str(project_path),
+    llm = _build_llm_client_or_none()
+    runtime = AgentRuntime(
+        llm=llm,
+        tools=tools,
+        verification=None,
+        wal=wal,
+        channel=channel,
     )
+
+    from src.tui.app import NexusApp
+    app = NexusApp(channel=channel, runtime=runtime, wal=wal)
     app.run()
     return 0
+
+
+def _build_llm_client_or_none():
+    """Same as run.py — local copy to avoid circular import."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    if not api_key:
+        return None
+    try:
+        from anthropic import AsyncAnthropic
+        return _LocalAnthropicLLM(AsyncAnthropic(api_key=api_key))
+    except ImportError:
+        return None
+
+
+class _LocalAnthropicLLM:
+    def __init__(self, client):
+        self._client = client
+
+    async def complete(self, *, system: str, messages: list[dict]):
+        from anthropic import AsyncAnthropic
+        msg = await self._client.messages.create(
+            model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+            max_tokens=4096,
+            system=system,
+            messages=messages,
+        )
+        return _LocalAnthropicResponse(msg)
+
+
+class _LocalAnthropicResponse:
+    def __init__(self, msg):
+        self.content = msg.content
