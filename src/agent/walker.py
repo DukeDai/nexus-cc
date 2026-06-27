@@ -87,7 +87,7 @@ class PlanWalker:
                 last_error = e
                 if attempt < MAX_RETRIES_PER_STEP:
                     continue  # retry
-                # All retries exhausted — fall through to _handle_step_failure
+                # All retries exhausted — hand off to failure strategy
                 return await self._handle_step_failure(step, e)
             except Exception as e:
                 last_error = e
@@ -154,10 +154,12 @@ class PlanWalker:
     async def _handle_step_failure(self, step: PlanStep, error: StepFailure) -> StepResult:
         """Route on_failure strategy (section 6.2)."""
         if step.on_failure == OnFailure.ABORT:
+            await self._channel.emit(StepFailed(step=step, error=str(error)))
             raise PlanAborted(f"step {step.id} aborted: {error}")
         elif step.on_failure == OnFailure.RETRY:
             return await self.execute_step(step)
         elif step.on_failure == OnFailure.SKIP:
+            await self._channel.emit(StepFailed(step=step, error=str(error)))
             return StepResult(step_id=step.id, status="skipped", error=str(error))
         elif step.on_failure == OnFailure.ASK:
             await self._channel.emit(
@@ -174,8 +176,10 @@ class PlanWalker:
                     if answer == "retry":
                         return await self.execute_step(step)
                     elif answer == "skip":
+                        await self._channel.emit(StepFailed(step=step, error=str(error)))
                         return StepResult(step_id=step.id, status="skipped", error=str(error))
                     elif answer == "abort":
+                        await self._channel.emit(StepFailed(step=step, error=str(error)))
                         raise PlanAborted(f"step {step.id} aborted by user")
         # Default fallback
         return StepResult(step_id=step.id, status="skipped", error=str(error))

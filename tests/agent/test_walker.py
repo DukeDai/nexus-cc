@@ -193,6 +193,23 @@ class TestStepFailureSkipStrategy:
         assert results[0].status == "skipped"
         assert results[0].error is not None
 
+        # Drain events and verify StepFailed was emitted before StepCompleted.
+        # Spec section 4.2: walker MUST emit StepFailed when a step does not complete.
+        # The TUI marks the step ✗ even though walker records status=skipped.
+        events = []
+        while True:
+            evt = channel.try_recv_event()
+            if evt is None:
+                break
+            events.append(evt)
+
+        step_failed_events = [e for e in events if isinstance(e, StepFailed)]
+        step_completed_events = [e for e in events if isinstance(e, StepCompleted)]
+        assert len(step_failed_events) == 1, f"expected exactly one StepFailed, got {[type(e).__name__ for e in events]}"
+        assert len(step_completed_events) == 1, f"expected exactly one StepCompleted, got {[type(e).__name__ for e in events]}"
+        assert step_failed_events[0].step.id == steps[0].id
+        assert step_completed_events[0].result.status == "skipped"
+
 
 class TestStepFailureAbortStrategy:
     """A TOOL step with on_failure=ABORT whose tool raises → PlanAborted exception."""
@@ -217,8 +234,27 @@ class TestStepFailureAbortStrategy:
         channel = make_channel()
         walker = PlanWalker(channel=channel, tools=tools_registry)
 
-        with pytest.raises(PlanAborted):
-            await walker.walk(plan)
+        # Spec section 4.2: StepFailed MUST be emitted before PlanAborted is raised.
+        # Drain events before the exception propagates out of walk().
+        events_captured: list = []
+
+        async def drain_while_walking():
+            try:
+                await walker.walk(plan)
+            except PlanAborted:
+                pass
+            # Drain remaining events after walk completes (exception or not)
+            while True:
+                evt = channel.try_recv_event()
+                if evt is None:
+                    break
+                events_captured.append(evt)
+
+        await drain_while_walking()
+
+        step_failed_events = [e for e in events_captured if isinstance(e, StepFailed)]
+        assert len(step_failed_events) == 1, f"expected exactly one StepFailed, got {[type(e).__name__ for e in events_captured]}"
+        assert step_failed_events[0].step.id == steps[0].id
 
 
 class TestStepFailureRetryThenSucceed:
