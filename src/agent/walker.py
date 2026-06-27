@@ -63,6 +63,10 @@ class PlanWalker:
     async def walk(self, plan: Plan) -> list[StepResult]:
         """Iterate plan.steps[], executing each and emitting events."""
         results: list[StepResult] = []
+        # Determine which steps are already checkpointed (for crash recovery)
+        completed_ids: set[str] = set()
+        if self._wal is not None:
+            completed_ids = self._wal.get_completed_step_ids(plan.plan_id)
         for idx, step in enumerate(plan.steps):
             # Pause check at step boundary (section 6.3)
             if self._channel.is_paused:
@@ -73,12 +77,26 @@ class PlanWalker:
             if self._channel.is_aborted:
                 raise PlanAborted(self._channel.aborted_reason)
 
+            # Skip already-checkpointed steps (crash recovery)
+            if step.id in completed_ids:
+                continue
+
             await self._channel.emit(StepStarted(step=step, index=idx, total=len(plan.steps)))
 
             try:
                 result = await self.execute_step(step)
                 results.append(result)
                 await self._channel.emit(StepCompleted(step=step, result=result))
+                # Checkpoint after each successful step
+                if self._wal is not None:
+                    await self._wal.checkpoint(
+                        plan=plan,
+                        cursor=step.id,
+                        result={
+                            "output": result.output if hasattr(result, "output") else None,
+                            "status": result.status,
+                        },
+                    )
             except PlanAborted:
                 raise
 

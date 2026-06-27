@@ -26,8 +26,11 @@ class FakeLLM:
 class EmptyWAL:
     """Minimal WAL that does nothing."""
 
-    async def append(self, event: str, data: dict) -> None:
+    async def checkpoint(self, *, plan, cursor: str, result: dict | None = None) -> None:
         pass
+
+    def get_completed_step_ids(self, plan_id: str) -> set[str]:
+        return set()
 
 
 # ─── Tests ─────────────────────────────────────────────────────────────────────
