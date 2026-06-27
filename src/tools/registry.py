@@ -43,3 +43,26 @@ class ToolRegistry:
         """
         tool = self.get(name)
         return await tool.execute(**args)
+
+    @classmethod
+    def with_defaults(cls, *, workdir: str = ".") -> "ToolRegistry":
+        """Build a registry pre-populated with the 8 built-in tools."""
+        reg = cls()
+        from .read import ReadTool
+        from .write import WriteTool
+        from .edit import EditTool
+        from .bash import BashTool
+        from .glob import GlobTool
+        from .grep import GrepTool
+        from .git import GitTool
+        from .web_search import WebSearchTool
+
+        reg.register(ReadTool())
+        reg.register(WriteTool())
+        reg.register(EditTool())
+        reg.register(BashTool())
+        reg.register(GlobTool())
+        reg.register(GrepTool())
+        reg.register(GitTool(workdir=workdir))
+        reg.register(WebSearchTool())
+        return reg
