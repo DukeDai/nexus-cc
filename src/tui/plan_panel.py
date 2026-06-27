@@ -1,0 +1,157 @@
+"""PlanPanel - Textual Container showing a Plan as a Tree, with key bindings."""
+from __future__ import annotations
+
+from textual.binding import Binding
+from textual.containers import Container
+from textual.widgets import Tree
+
+from ..agent.control import Command, CommandKind, ControlChannel
+from ..agent.events import (
+    PlanStarted,
+    StepCompleted,
+    StepFailed,
+    StepStarted,
+    WalkEvent,
+)
+
+
+class PlanPanel(Container):
+    """Left pane: renders the Plan as a Tree of steps.
+
+    Drains ControlChannel._events on a 0.1s interval and updates the tree
+    in response to PlanStarted / StepStarted / StepCompleted / StepFailed.
+
+    Key bindings dispatch Commands back through the channel so the
+    AgentRuntime can react (approve, reject, pause, resume, abort).
+    """
+
+    BINDINGS = [
+        ("a", "approve", "Approve"),
+        ("r", "reject", "Reject"),
+        ("e", "edit_step", "Edit"),
+        ("d", "delete_step", "Delete"),
+        ("i", "insert_step", "Insert"),
+        # j/k mirror Tree's built-in cursor movement; hidden from footer.
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+        ("J", "move_down", "Move down"),
+        ("K", "move_up", "Move up"),
+        ("p", "pause", "Pause"),
+        ("P", "resume", "Resume"),
+        ("x", "abort", "Abort"),
+    ]
+
+    DEFAULT_CSS = """
+    PlanPanel {
+        height: 100%;
+    }
+    PlanPanel Tree {
+        height: 100%;
+    }
+    """
+
+    @property
+    def tree(self) -> Tree:
+        """Public alias for tests / external callers (mirrors plan naming)."""
+        return self.plan_tree
+
+    def __init__(self, *, channel: ControlChannel, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.channel = channel
+        self.plan_tree: Tree = Tree("Plan")
+
+    def compose(self):
+        yield self.plan_tree
+
+    def on_mount(self) -> None:
+        # Drain walker events ~10x/sec to keep the tree responsive.
+        self.set_interval(0.1, self._drain_events)
+
+    # ------------------------------------------------------------------ events
+
+    def _drain_events(self) -> None:
+        """Pull all currently-queued events from the channel and handle them."""
+        while True:
+            event = self.channel.try_recv_event()
+            if event is None:
+                return
+            self._handle_event(event)
+
+    def _handle_event(self, event: WalkEvent) -> None:
+        """Dispatch a single WalkEvent to the right tree mutator."""
+        if isinstance(event, PlanStarted):
+            self._render_plan(event.plan)
+        elif isinstance(event, StepStarted):
+            self._mark_step(event.step.id, "▶")
+        elif isinstance(event, StepCompleted):
+            self._mark_step(event.step.id, "✓")
+        elif isinstance(event, StepFailed):
+            self._mark_step(event.step.id, "✗")
+        # Other events are acknowledged but not rendered in this panel.
+
+    # ------------------------------------------------------------------- tree
+
+    def _render_plan(self, plan) -> None:
+        """Reset the tree and add one leaf per step."""
+        self.plan_tree.reset(plan.spec or "Plan")
+        for step in plan.steps:
+            self.plan_tree.root.add_leaf(self._step_label(step), data={"step_id": step.id})
+
+    def _step_label(self, step, marker: str = " ") -> str:
+        """Format a step's display label."""
+        intent = (step.intent or "")[:50]
+        return f"{marker} {step.kind.value}: {intent}"
+
+    def _mark_step(self, step_id: str, marker: str) -> None:
+        """Find the node with the given step_id and prepend the marker."""
+        for node in self.plan_tree.root.children:
+            data = node.data or {}
+            if data.get("step_id") == step_id:
+                # Re-derive the label without the leading marker character.
+                old = str(node.label)
+                stripped = old.lstrip()
+                # The original label was "{marker} {kind}: {intent}" where
+                # marker was " " or one of ▶/✓/✗. Strip the first character
+                # and re-prefix with the new marker.
+                if len(stripped) > 1 and stripped[0] in (" ", "▶", "✓", "✗"):
+                    rest = stripped[1:].lstrip()
+                else:
+                    rest = stripped
+                node.set_label(f"{marker} {rest}")
+                return
+
+    # ----------------------------------------------------------------- actions
+
+    def _put_command(self, cmd: Command) -> None:
+        self.channel._commands.put_nowait(cmd)
+
+    def action_approve(self) -> None:
+        self._put_command(Command(CommandKind.APPROVE_PLAN))
+
+    def action_reject(self) -> None:
+        self._put_command(Command(CommandKind.REJECT_PLAN))
+
+    def action_pause(self) -> None:
+        self.channel.pause()
+
+    def action_resume(self) -> None:
+        self.channel.resume()
+
+    def action_abort(self) -> None:
+        self._put_command(Command(CommandKind.ABORT))
+
+    # ---- stubs: implemented properly in Task 16+ ----
+    def action_edit_step(self) -> None:
+        self.app.bell()
+
+    def action_delete_step(self) -> None:
+        self.app.bell()
+
+    def action_insert_step(self) -> None:
+        self.app.bell()
+
+    def action_move_down(self) -> None:
+        self.app.bell()
+
+    def action_move_up(self) -> None:
+        self.app.bell()
