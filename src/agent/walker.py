@@ -1,6 +1,7 @@
 """PlanWalker - walks Plan.steps[] emitting events via ControlChannel."""
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from .control import CommandKind, ControlChannel, StepResult
@@ -132,8 +133,17 @@ class PlanWalker:
         return StepResult(step_id=step.id, status="done", output=output)
 
     async def _execute_verify_step(self, step: PlanStep) -> StepResult:
-        """Placeholder for Task 8 (VERIFY step)."""
-        return StepResult(step_id=step.id, status="done", output=None)
+        """Execute a VERIFY step using the injected verification pipeline."""
+        if self._verification is None:
+            raise StepFailure(step.id, "VERIFY step requires verification pipeline")
+        code = step.args.get("code", "")
+        context = step.args.get("context", {})
+        result = self._verification.run(code=code, context=context)
+        if inspect.isawaitable(result):
+            result = await result
+        if isinstance(result, dict) and not result.get("passed", False):
+            raise StepFailure(step.id, f"verification failed: {result.get('details', result)}")
+        return StepResult(step_id=step.id, status="done", output=result)
 
     async def _execute_critique_step(self, step: PlanStep) -> StepResult:
         """Placeholder for Task 9 (CRITIQUE step)."""
