@@ -51,3 +51,36 @@ def test_role_registry_get_missing_raises():
     registry = RoleRegistry(runtime=None)
     with pytest.raises(KeyError):
         registry.get(AgentRole.IMPLEMENTER)
+
+
+def test_role_registry_register_mismatched_role_raises():
+    registry = RoleRegistry(runtime=None)
+    defn = RoleDefinition(
+        role=AgentRole.REVIEWER,
+        system_prompt="x",
+        allowed_tools=["Read"],
+        model_tier=ModelTier.SONNET,
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        registry.register(AgentRole.SPECIFIER, defn)
+
+
+def test_role_definition_default_on_subplan_failure_is_ask():
+    defn = RoleDefinition(
+        role=AgentRole.SPECIFIER,
+        system_prompt="x",
+        allowed_tools=["Read"],
+        model_tier=ModelTier.SONNET,
+    )
+    from src.agent.plan import OnFailure
+    assert defn.on_subplan_failure == OnFailure.ASK
+
+
+def test_role_definition_max_subplan_steps_default():
+    defn = RoleDefinition(
+        role=AgentRole.SPECIFIER,
+        system_prompt="x",
+        allowed_tools=["Read"],
+        model_tier=ModelTier.SONNET,
+    )
+    assert defn.max_subplan_steps == 10

@@ -77,3 +77,15 @@ def test_update_prompt_registry_respects_walk_count_cap(tmp_path):
     staged2 = evolver.update_prompt_registry(reg)
     from src.agent.evolution import StagedChanges
     assert isinstance(staged2, StagedChanges)
+
+
+def test_should_replan_returns_false_when_no_recent_failures():
+    evolver = Evolver(wal=MagicMock(), memory=MagicMock(), feedback=MagicMock())
+    results = _make_results("completed", "completed", "completed")
+    assert evolver.should_replan(results) is False
+
+
+def test_should_replan_returns_true_when_three_consecutive_failures():
+    evolver = Evolver(wal=MagicMock(), memory=MagicMock(), feedback=MagicMock())
+    results = _make_results("completed", "failed", "failed", "failed")
+    assert evolver.should_replan(results) is True

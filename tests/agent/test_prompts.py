@@ -68,3 +68,24 @@ def test_registry_revert_copies_target_version(tmp_path):
     assert current.system_prompt == "v1"
     assert current.version == 4
     assert current.last_updated_walk_count == 0   # reset on revert
+
+
+def test_registry_get_missing_raises_keyerror(tmp_path):
+    reg = PromptTemplateRegistry(path=tmp_path)
+    with pytest.raises(KeyError):
+        reg.get("nonexistent")
+
+
+def test_registry_update_rejects_name_mismatch(tmp_path):
+    reg = PromptTemplateRegistry(path=tmp_path)
+    bad_template = PromptTemplate(
+        name="reviewer", system_prompt="x", version=1,
+        updated_at=datetime.now(), source_episodes=[], last_updated_walk_count=0,
+    )
+    with pytest.raises(ValueError):
+        reg.update("planner", bad_template)
+
+
+def test_registry_history_empty_returns_empty_list(tmp_path):
+    reg = PromptTemplateRegistry(path=tmp_path)
+    assert reg.history("nonexistent") == []
