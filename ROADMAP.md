@@ -62,16 +62,31 @@ Released. Full plan in `docs/superpowers/plans/2026-06-27-nexus-plan-first-redes
 
 ---
 
-## v1.2 — Q4 2026 — Deferred Tooling & Routing
+## v1.2 — Q4 2026 — Model Router
 
 **Goals:**
 - **Real WebSearch tool**: replace v1.0 stub with live search backend (e.g., Anthropic WebSearch API or pluggable provider).
-- **Model Router**: cost-aware LLM selection — choose model per step based on task complexity, budget, and historical success rates.
-- **MCP Server Mode**: expose Nexus as an MCP server so external clients (e.g., Claude Desktop, other agents) can invoke `nexus run` and reuse the plan-first runtime.
+- **Model Router** (v1.2 ship): cost-aware LLM selection — choose model per step based on task complexity, budget, and historical success rates. See `docs/superpowers/specs/2026-06-28-nexus-v12-model-router-design.md`.
+
+**Deferred to v1.3:**
+- **MCP Server Mode**: expose Nexus as an MCP server so external clients (e.g., Claude Desktop, other agents) can invoke `nexus run` and reuse the plan-first runtime. v1.3 ships **stdio-only** transport first; HTTP/SSE + OAuth deferred further. See `docs/superpowers/specs/2026-06-28-nexus-v12-mcp-server-design.md`.
 
 **Note:** Design specs are still TODO. Once drafted, place under `docs/superpowers/specs/2026-06-28-nexus-v12-*.md`.
 
 **Cuts from v1.1:** none expected — v1.2 is additive (new tool impl, new router module, new MCP transport).
+
+---
+
+## v1.3 — Q4 2026 — MCP Server Mode (stdio)
+
+**Goals:**
+- **MCP Server Mode (stdio-only)**: expose Nexus as an MCP server over stdio so local clients (Claude Code, Cline, Cursor) can invoke plan/session primitives. See `docs/superpowers/specs/2026-06-28-nexus-v12-mcp-server-design.md` (deferred from v1.2).
+- **Hard budget cap** (from Model Router spec §13) — kill walk if `budget_usd_per_session` exceeded, rather than v1.2's advisory-only warning.
+- **Auto plan-complexity detection** (from Model Router spec §13) — infer hint from prompt length + step count.
+
+**Deferred from v1.3:**
+- HTTP / SSE transport + Bearer / OAuth auth (v1.4+).
+- Multi-model speculation (v3 TaskForest scope).
 
 ---
 
@@ -113,6 +128,7 @@ Released. Full plan in `docs/superpowers/plans/2026-06-27-nexus-plan-first-redes
 | 2026-06-27 | WAL JSONL replaces SQLite | Simpler, append-only, no schema migrations |
 | 2026-06-28 | v1.1 ships sub-plans + MCP + memory + foundational self-evolution | SUBPLAN + RoleRegistry unlocks multi-agent plans; three-layer memory + Evolver enable learning without re-architecting runtime |
 | 2026-06-28 | v1.2 plan: WebSearch + Model Router + MCP server mode | Real WebSearch unblocks live research; Model Router controls cost as plans grow; MCP server mode lets external clients reuse Nexus runtime |
+| 2026-06-28 | v1.2 scope narrowed: Model Router only; MCP Server Mode deferred to v1.3 (stdio-only) | Keeps v1.2 shippable (~4 weeks); MCP server needs separate SDK dependency + stdio/HTTP transport split |
 | 2026-06-28 | v2 reframed: deepening self-evolution (not reintroduction) | v1.1 shipped Evolver + PromptTemplateRegistry; v2 focuses on A/B testing + auto-mined skill library on top of that foundation |
 
 ---

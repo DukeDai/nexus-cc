@@ -23,6 +23,8 @@
 
 ### 1.2 为什么需要 model router
 
+> **Default mapping note (2026-06-28, finalized):** The one deliberate cost-downgrade in v1.2 is `VERIFIER_SECURITY` → `claude-haiku-4-5` (vs v1.1's all-Sonnet-4.6). Binary pattern-match review tolerates the ~12× cost reduction; capability delta is negligible for that call site. All other hints (`PLANNER`, `CRITIQUE`, `VERIFIER_REVIEW`, `EVOLVER`, `DEFAULT`) remain on `claude-sonnet-4-6` — matching v1.1 behavior, so existing plans replay unchanged. See §5.1 (`DEFAULT_POLICY` table) and §4.2 (`ModelPolicy.DEFAULT_POLICY`).
+
 v1.1 把所有 LLM 调用都钉死在 Sonnet 4.6，导致三类浪费：
 
 1. **Verifier review 贵**：ReviewGate 的 spec-compliance / logic-analysis delegate 是 pass/fail 二元判断，用 Sonnet 过度。Haiku 4.5 成本约为 Sonnet 的 **1/12**，准确率损失对 binary pass/fail 任务影响可忽略。

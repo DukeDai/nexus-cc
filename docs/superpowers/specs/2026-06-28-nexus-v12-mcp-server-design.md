@@ -5,6 +5,8 @@
 > **Builds on**: v1.1.0 (multi-agent + memory + self-evolution) — `docs/superpowers/specs/2026-06-28-nexus-v11-multi-agent-memory-design.md`
 > **Scope**: Nexus v1.2 — expose Nexus as an MCP server so other agents (Claude Code, IDEs, custom tools) can drive plans/sessions via the standard MCP protocol
 > **Goal**: 让 Nexus 从 **MCP 消费者** 升级为 **MCP 双向公民** — 任何支持 MCP 的客户端都能启动/观察/控制一个 Nexus 会话
+>
+> **Deferral notice (2026-06-28):** Deferred from v1.2 to v1.3 (stdio-only transport first); see ROADMAP.md v1.3 section. v1.2 ships Model Router only. Spec retained for design continuity.
 
 ---
 
