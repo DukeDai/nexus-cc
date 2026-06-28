@@ -58,8 +58,51 @@ class Evolver:
     def update_prompt_registry(
         self, registry: "PromptTemplateRegistry"
     ) -> StagedChanges:
-        """Inspect last_outcome and stage prompt updates. Implemented in Task 21."""
-        return StagedChanges(changes={}, rationale={})
+        """Stage prompt updates based on last_outcome heuristics.
+
+        Heuristic: if failure rate > 30% and walk count delta > cap, propose
+        augmenting the planner system prompt with observed error categories.
+        """
+        outcome = self._last_outcome
+        total = outcome.get("total_steps", 0)
+        failed = outcome.get("failed_count", 0)
+        if total == 0:
+            return StagedChanges(changes={}, rationale={})
+
+        failure_rate = failed / total
+        changes: dict[str, PromptTemplate] = {}
+        rationale: dict[str, str] = {}
+
+        if failure_rate > 0.3:
+            histogram = outcome.get("error_histogram", {})
+            if histogram:
+                try:
+                    current = registry.get("planner")
+                except KeyError:
+                    return StagedChanges(changes={}, rationale={})
+                walks_since_update = self._walk_count - current.last_updated_walk_count
+                if walks_since_update < self.WALK_COUNT_CAP:
+                    return StagedChanges(changes={}, rationale={})
+                error_summary = ", ".join(f"{cat}={n}" for cat, n in histogram.items())
+                new_prompt = (
+                    current.system_prompt
+                    + f"\n\n# Recent error patterns\nAvoid these: {error_summary}"
+                )
+                new_template = PromptTemplate(
+                    name="planner",
+                    system_prompt=new_prompt,
+                    version=current.version + 1,
+                    updated_at=datetime.now(),
+                    source_episodes=[outcome.get("plan_id", "")],
+                    last_updated_walk_count=self._walk_count,
+                )
+                changes["planner"] = new_template
+                rationale["planner"] = (
+                    f"Failure rate {failure_rate:.0%} exceeds 30% threshold; "
+                    f"adding observed error patterns to planner prompt"
+                )
+
+        return StagedChanges(changes=changes, rationale=rationale)
 
     def should_replan(self, partial_results: list[StepResult]) -> bool:
         """Decide mid-walk whether the plan should be regenerated."""
