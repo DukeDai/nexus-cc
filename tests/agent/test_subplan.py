@@ -2,8 +2,9 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from src.agent.control import StepResult
-from src.agent.plan import Plan, PlanStep, PlanStepKind
+from src.agent.plan import Plan, PlanStep, PlanStepKind, OnFailure
 from src.agent.walker import PlanWalker, PlanAborted
+from src.agent.verify_adapter import VerificationAdapter, VerificationOutcome
 from src.agents.base import AgentRole, ModelTier
 from src.agents.registry import RoleDefinition, RoleRegistry
 
@@ -89,3 +90,58 @@ async def test_execute_subplan_raises_when_registry_missing():
     )
     with pytest.raises(RuntimeError, match="RoleRegistry not configured"):
         await walker._execute_subplan(step)
+
+
+class _StubPipeline:
+    def __init__(self, outcome):
+        self._outcome = outcome
+
+    async def verify(self, step, step_result, ctx):
+        return self._outcome
+
+
+@pytest.mark.asyncio
+async def test_execute_verify_with_pipeline_passes_when_outcome_passed():
+    adapter = VerificationAdapter(wal=MagicMock())
+    adapter.register("security", _StubPipeline(VerificationOutcome(passed=True)))
+    walker = PlanWalker(
+        channel=MagicMock(),
+        tools=MagicMock(),
+        wal=MagicMock(),
+        verifier_adapter=adapter,
+    )
+    step = PlanStep(
+        id="step-1",
+        intent="verify security",
+        kind=PlanStepKind.VERIFY,
+        pipeline="security",
+        on_failure=OnFailure.ABORT,
+    )
+    result = await walker._execute_verify(step, StepResult(step_id="step-1", status="completed"))
+    assert result.status == "verified"
+    assert result.metadata["verifier_outcome"].passed is True
+
+
+@pytest.mark.asyncio
+async def test_execute_verify_with_retry_with_feedback_returns_feedback():
+    adapter = VerificationAdapter(wal=MagicMock())
+    adapter.register(
+        "security",
+        _StubPipeline(VerificationOutcome(passed=False, errors=["eval() found at auth.py:42"])),
+    )
+    walker = PlanWalker(
+        channel=MagicMock(),
+        tools=MagicMock(),
+        wal=MagicMock(),
+        verifier_adapter=adapter,
+    )
+    step = PlanStep(
+        id="step-1",
+        intent="verify security",
+        kind=PlanStepKind.VERIFY,
+        pipeline="security",
+        on_failure=OnFailure.RETRY_WITH_FEEDBACK,
+    )
+    result = await walker._execute_verify(step, StepResult(step_id="step-1", status="completed"))
+    assert result.status == "retry_with_feedback"
+    assert "eval() found at auth.py:42" in result.feedback

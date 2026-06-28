@@ -32,6 +32,7 @@ class StepResult:
     status: str
     output: Any = None
     error: str | None = None
+    feedback: list[str] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

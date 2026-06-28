@@ -55,6 +55,7 @@ class PlanWalker:
         llm: Any = None,
         wal: Any = None,
         role_registry: RoleRegistry | None = None,
+        verifier_adapter: Any = None,
     ) -> None:
         self._channel = channel
         self._tools = tools
@@ -62,6 +63,7 @@ class PlanWalker:
         self._llm = llm
         self._wal = wal
         self.role_registry = role_registry
+        self.verifier_adapter = verifier_adapter
 
     async def walk(self, plan: Plan) -> list[StepResult]:
         """Iterate plan.steps[], executing each and emitting events."""
@@ -135,7 +137,7 @@ class PlanWalker:
         if step.kind == PlanStepKind.TOOL:
             return await self._execute_tool_step(step)
         elif step.kind == PlanStepKind.VERIFY:
-            return await self._execute_verify_step(step)
+            return await self._execute_verify(step, StepResult(step_id=step.id, status="completed"))
         elif step.kind == PlanStepKind.CRITIQUE:
             return await self._execute_critique_step(step)
         elif step.kind == PlanStepKind.ASK_USER:
@@ -156,8 +158,36 @@ class PlanWalker:
         await self._channel.emit(ToolCallCompleted(result=output, step_id=step.id))
         return StepResult(step_id=step.id, status="done", output=output)
 
-    async def _execute_verify_step(self, step: PlanStep) -> StepResult:
-        """Execute a VERIFY step using the injected verification pipeline."""
+    async def _execute_verify(self, step: PlanStep, prior_result: StepResult) -> StepResult:
+        """Execute a VERIFY step, either by pipeline (named) or by success_criteria (v1 behavior)."""
+        if step.pipeline is not None and self.verifier_adapter is not None:
+            # Pipeline branch (Task 7-9)
+            outcome = await self.verifier_adapter.run(step, prior_result, ctx={})
+            if outcome.passed:
+                return StepResult(
+                    step_id=step.id,
+                    status="verified",
+                    metadata={"verifier_outcome": outcome},
+                )
+            # Verifier failed: route by on_failure strategy
+            if step.on_failure == OnFailure.RETRY_WITH_FEEDBACK:
+                return StepResult(
+                    step_id=step.id,
+                    status="retry_with_feedback",
+                    feedback=outcome.errors,
+                    metadata={"verifier_outcome": outcome},
+                )
+            return StepResult(
+                step_id=step.id,
+                status="failed",
+                error="\n".join(outcome.errors),
+                metadata={"verifier_outcome": outcome},
+            )
+        # v1 success_criteria-based path (unchanged)
+        return await self._execute_verify_v1(step)
+
+    async def _execute_verify_v1(self, step: PlanStep) -> StepResult:
+        """Execute a VERIFY step using the injected verification pipeline (v1 behavior)."""
         if self._verification is None:
             raise StepFailure(step.id, "VERIFY step requires verification pipeline")
         code = step.args.get("code", "")
