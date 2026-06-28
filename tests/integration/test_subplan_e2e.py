@@ -45,7 +45,7 @@ async def test_e2e_subplan_completes_and_writes_wal(tmp_path):
 
     runtime = MagicMock()
     runtime.plan_subplan = AsyncMock()
-    runtime.plan_subplan.side_effect = lambda role, definition, task, context: fake_plan(role, definition, task, context)
+    runtime.plan_subplan.side_effect = lambda role, definition, task, context, model_name=None: fake_plan(role, definition, task, context)
     runtime.walk = AsyncMock(return_value=StepResult(step_id="sub-s1", status="completed"))
 
     registry = RoleRegistry(runtime=runtime)
