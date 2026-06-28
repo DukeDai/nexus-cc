@@ -315,7 +315,7 @@ class NexusApp(App):
         self.query_one(MemoryPanel).focus()
 
     def action_skill_picker(self) -> None:
-        skills = self._runtime.role_registry  # placeholder; wire from SkillIndex in production
+        skills = getattr(self.runtime, 'role_registry', None) or []
         self.push_screen(SkillPickerModal([]))
 
     def action_evolve_approval(self) -> None:

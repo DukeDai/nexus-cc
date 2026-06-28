@@ -10,6 +10,9 @@ from textual.widgets import Static
 class VerifierPanel(Static):
     """Displays the last verifier pipeline outcome."""
 
+    COMPONENT_CLASSES = frozenset()
+    can_focus = True
+
     last_outcome: reactive[tuple[str, bool, list[str]] | None] = reactive(None)
 
     def render(self):

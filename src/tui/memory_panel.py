@@ -10,6 +10,9 @@ from textual.widgets import Static
 class MemoryPanel(Static):
     """Displays memory index stats (episodic + semantic + skill counts)."""
 
+    COMPONENT_CLASSES = frozenset()
+    can_focus = True
+
     stats: reactive[dict] = reactive({})
 
     def render(self):
