@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import asdict
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .control import ControlChannel, Command, CommandKind
@@ -25,6 +28,9 @@ class AgentRuntime:
         channel: ControlChannel,
         role_registry: "RoleRegistry | None" = None,
         memory_store: Any = None,
+        evolver: Any = None,
+        prompt_registry: Any = None,
+        workdir: Path | None = None,
     ) -> None:
         self._llm = llm
         self._tools = tools
@@ -34,6 +40,9 @@ class AgentRuntime:
         self.role_registry = role_registry
         self._plan: Plan | None = None
         self._memory_store = memory_store
+        self._evolver = evolver
+        self._prompt_registry = prompt_registry
+        self._workdir = Path(workdir) if workdir else Path(".")
         self._planner = Planner(llm=llm) if llm is not None else None
         self._walker = PlanWalker(
             channel=channel,
@@ -60,7 +69,30 @@ class AgentRuntime:
             raise RuntimeError("No plan to walk")
         self._plan = target
         self._walker._runtime = self
-        return await self._walker.walk(target)
+        try:
+            result = await self._walker.walk(target)
+        except Exception as e:
+            if self._evolver:
+                self._evolver.record_outcome(target, results=getattr(self._walker, "_step_results", []))
+                self._stage_evolver_changes()
+            raise
+        if self._evolver:
+            self._evolver.record_outcome(target, results=getattr(self._walker, "_step_results", []))
+            self._stage_evolver_changes()
+        return result
+
+    def _stage_evolver_changes(self) -> None:
+        if not self._evolver or not self._prompt_registry:
+            return
+        staged = self._evolver.update_prompt_registry(self._prompt_registry)
+        if staged.changes:
+            path = self._workdir / ".nexus" / "prompts" / "staged.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({
+                "changes": {n: asdict(t) for n, t in staged.changes.items()},
+                "rationale": staged.rationale,
+                "created_at": staged.created_at.isoformat(),
+            }, default=str))
 
     async def plan_subplan(
         self,
