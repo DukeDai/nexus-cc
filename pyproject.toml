@@ -51,6 +51,8 @@ include = ["src*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
 filterwarnings = [
     "ignore::DeprecationWarning",  # suppress enum warning from states.py
 ]
@@ -68,3 +70,38 @@ python_version = "3.12"
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
+
+[tool.coverage.run]
+branch = true
+source = ["nexus"]
+# Measure only the importable package; relative_files=true makes paths stable across CWDs
+relative_files = true
+# Files to skip during execution (still tracked if imported, but not as coverage targets)
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__init__.py",
+    "*/_version.py",
+    "src/nexus/mcp/*",          # thin transport wrappers, low signal
+]
+
+[tool.coverage.report]
+# Show lines that were never executed
+show_missing = true
+# Skip 100%-covered files from the report for less noise
+skip_covered = false
+# Fail CI if total coverage drops below threshold
+fail_under = 70
+precision = 1
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "\\.\\.\\.",
+    "pass",
+]
+sort = "Cover"
+
+[tool.coverage.paths]
+source = ["src/nexus", "nexus"]
