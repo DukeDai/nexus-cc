@@ -19,11 +19,15 @@ from textual.widgets import Header, Footer
 from ..agent.control import Command, CommandKind, ControlChannel
 from ..agent.events import PlanStarted, WalkEvent
 from ..agent.plan import Plan, PlanStep, PlanStepKind, OnFailure
+from .evolve_approval_modal import EvolveApprovalModal
 from .execution_panel import ExecutionPanel
+from .memory_panel import MemoryPanel
 from .new_task_modal import NewTaskModal
 from .plan_panel import PlanPanel
 from .recover_modal import RecoverModal
+from .skill_picker_modal import SkillPickerModal
 from .tool_output_panel import ToolOutputPanel
+from .verifier_panel import VerifierPanel
 
 
 class NexusApp(App):
@@ -39,6 +43,11 @@ class NexusApp(App):
         ("ctrl+c", "quit", "Quit"),
         ("?", "help", "Help"),
         ("n", "new_task", "New task"),
+        ("V", "focus_verifier", "Verifier"),
+        ("M", "focus_memory", "Memory"),
+        ("s", "skill_picker", "Skill"),
+        ("E", "evolve_approval", "Evolve"),
+        ("ctrl+r", "rerun_verifier", "Re-run verifier"),
     ]
 
     def __init__(self, *, channel: ControlChannel, runtime=None, wal=None) -> None:
@@ -64,6 +73,8 @@ class NexusApp(App):
             with Vertical(id="right-pane"):
                 yield ExecutionPanel(channel=self.channel, id="execution-pane")
                 yield ToolOutputPanel(channel=self.channel, id="tool-output-pane")
+        yield VerifierPanel(id="verifier-panel")
+        yield MemoryPanel(id="memory-panel")
         yield Footer()
 
     # ------------------------------------------------------------ on_mount
@@ -296,6 +307,24 @@ class NexusApp(App):
             asyncio.create_task(_plan_and_emit())
 
         self.push_screen(NewTaskModal(on_submit=_on_submit))
+
+    def action_focus_verifier(self) -> None:
+        self.query_one(VerifierPanel).focus()
+
+    def action_focus_memory(self) -> None:
+        self.query_one(MemoryPanel).focus()
+
+    def action_skill_picker(self) -> None:
+        skills = self._runtime.role_registry  # placeholder; wire from SkillIndex in production
+        self.push_screen(SkillPickerModal([]))
+
+    def action_evolve_approval(self) -> None:
+        from pathlib import Path
+        staged = Path(self.workdir) / ".nexus" / "prompts" / "staged.json"
+        self.push_screen(EvolveApprovalModal(staged))
+
+    def action_rerun_verifier(self) -> None:
+        self.notify("Re-run verifier: not yet wired to active step")
 
 
 # ----------------------------------------------------------------------- helpers
