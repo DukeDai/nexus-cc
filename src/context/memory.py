@@ -56,6 +56,7 @@ class EpisodicIndex:
         self._wal = wal
         self._cache_path = cache_path
         self._entries: dict[str, EpisodicEntry] = {}
+        self._last_wal_mtime: float = 0.0
 
     def rebuild(self) -> None:
         """Scan WAL JSONL, build EpisodicEntry per completed plan, write cache."""
@@ -104,6 +105,7 @@ class EpisodicIndex:
                 error_categories=error_cats.get(plan_id, []),
             )
         self._write_cache()
+        self._last_wal_mtime = self._wal.path.stat().st_mtime if self._wal.path.exists() else 0.0
 
     def _write_cache(self) -> None:
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,8 +197,12 @@ class MemoryStore:
         self._skill_idx = SkillIndex(skill_loader=skill_loader)
 
     def warm(self) -> None:
-        """Rebuild indexes from current state. Called on app startup."""
-        self._episodic_idx.rebuild()
+        """Rebuild indexes only if WAL has changed since last warm."""
+        if not self._wal.path.exists():
+            return
+        current_mtime = self._wal.path.stat().st_mtime
+        if current_mtime > self._episodic_idx._last_wal_mtime:
+            self._episodic_idx.rebuild()
 
     def episodic(self) -> EpisodicIndex:
         return self._episodic_idx

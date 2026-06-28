@@ -61,3 +61,17 @@ def test_episodic_similar_past_returns_substring_matches(tmp_path):
     matches = idx.similar_past("add login screen", k=5)
     assert len(matches) >= 1
     assert matches[0].plan_id == "p1"
+
+
+def test_warm_skips_rebuild_when_wal_unchanged(tmp_path):
+    wal_path = tmp_path / "wal.jsonl"
+    wal_path.write_text('{"format_version": 2, "kind": "plan_start", "plan_id": "p1", "plan": {"id": "p1", "task": "x", "steps": []}}\n')
+    wal = MagicMock()
+    wal.path = wal_path
+    store = MemoryStore(wal=wal, project_root=tmp_path)
+    store.warm()
+    rebuild_count_first = len(store.episodic()._entries)
+    # Call warm again — no WAL change, should not re-read.
+    store.warm()
+    rebuild_count_second = len(store.episodic()._entries)
+    assert rebuild_count_first == rebuild_count_second
