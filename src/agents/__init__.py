@@ -8,6 +8,8 @@ from .base import (
     ModelTier,
     TaskSpec,
 )
+from .registry import RoleDefinition, RoleRegistry
+from .default_registry import register_default_roles
 from .specifier import SpecifierAgent
 from .implementer import ImplementerAgent
 from .reviewer import ReviewerAgent
@@ -20,6 +22,9 @@ __all__ = [
     "ModelTier",
     "TaskSpec",
     "DelegateTaskFn",
+    "RoleDefinition",
+    "RoleRegistry",
+    "register_default_roles",
     "SpecifierAgent",
     "ImplementerAgent",
     "ReviewerAgent",
