@@ -103,6 +103,7 @@ class Planner:
         spec: str | None = None,
         memory_context: str = "",
         model_hint: ModelHint = ModelHint.PLANNER,
+        model_name: str | None = None,
     ) -> Plan:
         """Generate a structured Plan from a task description.
 
@@ -117,6 +118,13 @@ class Planner:
                 sub-plans should pass ``ModelHint.CRITIQUE``. When the flag is
                 unset, the legacy ``LLMClient`` is used and this argument has no
                 effect — behavior is unchanged.
+            model_name: Optional explicit model name (e.g.
+                ``"claude-haiku-4-5"``). When provided, this is forwarded to
+                the underlying LLM client as the ``model`` payload field,
+                overriding the client's default. Per-role overrides in
+                ``.nexus/policy.yaml`` (resolved by the v1.2 ModelRouter) take
+                precedence when ``NEXUS_USE_MODEL_ROUTER=1``. ``None`` (default)
+                leaves model selection to the LLM client / router.
         """
         user_msg = f"Task: {task}"
         if spec:
@@ -127,10 +135,16 @@ class Planner:
             if attempt > 0 and last_error:
                 extra = f"\n\nPrevious attempt failed: {last_error}\nReturn ONLY valid JSON matching the schema."
             full_system = "\n\n".join(filter(None, [memory_context, SYSTEM_PROMPT]))
+            # Forward model_name as `model` kwarg to the LLM client; the
+            # client merges it into the request payload (Anthropic provider
+            # honors a `model` field in the payload via kwargs.update).
+            client_kwargs: dict = {"model_hint": model_hint}
+            if model_name is not None:
+                client_kwargs["model"] = model_name
             response = await self._llm.complete(
                 system=full_system,
                 messages=[{"role": "user", "content": user_msg + extra}],
-                model_hint=model_hint,
+                **client_kwargs,
             )
             text = response.content[0].text
             try:

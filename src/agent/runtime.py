@@ -100,6 +100,7 @@ class AgentRuntime:
         definition: "RoleDefinition",
         task: str,
         context: dict | None = None,
+        model_name: str | None = None,
     ) -> Plan:
         """Generate a sub-plan for the given role.
 
@@ -108,6 +109,17 @@ class AgentRuntime:
             definition: The role configuration.
             task: Natural-language task description.
             context: Optional context dict.
+            model_name: Optional v1.2 model-name hint derived from the role's
+                ``model_tier`` (FAST -> claude-haiku-4-5, SONNET ->
+                claude-sonnet-4-6, OPUS -> claude-opus-4-8). When provided,
+                this is the *initial* model selection; the planner / ModelPolicy
+                may still resolve a different name from
+                ``.nexus/policy.yaml`` (``per_role`` section) before the LLM is
+                called. ``None`` (default) preserves pre-v1.2 behavior — the
+                underlying LLM client uses its own default. The
+                ``NEXUS_USE_MODEL_ROUTER`` env var gates whether the hint is
+                actually consumed end-to-end (when unset, model_name has no
+                effect on routing).
 
         Returns:
             A new Plan ready to be walked. Max step count is capped at
@@ -121,7 +133,18 @@ class AgentRuntime:
             raise RuntimeError("Planner requires LLM client")
         # Use role's system_prompt as the spec for Planner.plan
         spec_content = definition.system_prompt
-        plan = await self._planner.plan(task, spec=spec_content)
+        # ``model_name`` is propagated as a hint; Planner.plan forwards it
+        # to the underlying LLMClient.complete(..., model=...) which honors
+        # it for the request payload. When the feature flag
+        # ``NEXUS_USE_MODEL_ROUTER=1`` is set, the ``_RouterAdapter`` is in
+        # control and resolves a final model name via ``ModelPolicy`` (the
+        # policy.yaml ``per_role`` section can still override this tier
+        # default). When unset, the hint is a no-op and the legacy LLM
+        # client uses its own default model — same as pre-v1.2.
+        plan_kwargs: dict = {"spec": spec_content}
+        if model_name is not None:
+            plan_kwargs["model_name"] = model_name
+        plan = await self._planner.plan(task, **plan_kwargs)
         if len(plan.steps) > definition.max_subplan_steps:
             raise ValueError(
                 f"Sub-plan has {len(plan.steps)} steps, exceeds "

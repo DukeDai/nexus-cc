@@ -17,6 +17,18 @@ if TYPE_CHECKING:
     from src.agent.plan import OnFailure
 
 
+# Static mapping from ModelTier to a default model name. Used by
+# ``RoleRegistry.spawn()`` to derive a model hint from a role's
+# ``model_tier`` and pass it to ``AgentRuntime.plan_subplan()``. The
+# per_role section of ``.nexus/policy.yaml`` (resolved by
+# ``ModelPolicy``) overrides this when ``NEXUS_USE_MODEL_ROUTER=1``.
+_TIER_TO_DEFAULT_MODEL: dict[ModelTier, str] = {
+    ModelTier.FAST: "claude-haiku-4-5",
+    ModelTier.SONNET: "claude-sonnet-4-6",
+    ModelTier.OPUS: "claude-opus-4-8",
+}
+
+
 @dataclass
 class RoleDefinition:
     """Configuration for a sub-agent role.
@@ -73,6 +85,14 @@ class RoleRegistry:
     async def spawn(self, role: AgentRole, task: str, context: dict[str, Any] | None = None) -> "Plan":
         """Spawn a sub-plan for the given role.
 
+        Reads ``definition.model_tier`` and derives a default model name via
+        the static ``_TIER_TO_DEFAULT_MODEL`` mapping. The model name is
+        passed to ``AgentRuntime.plan_subplan()`` as a hint. The per-role
+        section of ``.nexus/policy.yaml`` overrides this when the v1.2
+        ``ModelRouter`` is active (``NEXUS_USE_MODEL_ROUTER=1``); when the
+        flag is unset, the hint is forwarded to the LLM client as a
+        ``model=`` payload override.
+
         Args:
             role: The agent role to instantiate.
             task: Natural-language task description.
@@ -87,9 +107,13 @@ class RoleRegistry:
         if self._runtime is None:
             raise RuntimeError("RoleRegistry.spawn requires a runtime")
         definition = self.get(role)
+        # Tier -> default model name. Used as a *hint*; policy.yaml per_role
+        # wins when the router is enabled.
+        model_name = _TIER_TO_DEFAULT_MODEL.get(definition.model_tier)
         return await self._runtime.plan_subplan(
             role=role,
             definition=definition,
             task=task,
             context=context or {},
+            model_name=model_name,
         )
