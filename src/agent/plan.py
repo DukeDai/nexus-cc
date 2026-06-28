@@ -5,21 +5,26 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.agents.base import AgentRole
 
 
 class PlanStepKind(str, Enum):
-    TOOL = "TOOL"
-    VERIFY = "VERIFY"
-    CRITIQUE = "CRITIQUE"
-    ASK_USER = "ASK_USER"
+    TOOL = "tool"
+    VERIFY = "verify"
+    CRITIQUE = "critique"
+    ASK_USER = "ask_user"
+    SUBPLAN = "subplan"
 
 
 class OnFailure(str, Enum):
     ABORT = "abort"
-    RETRY = "retry"
     SKIP = "skip"
+    RETRY = "retry"
     ASK = "ask"
+    RETRY_WITH_FEEDBACK = "retry_with_feedback"
 
 
 @dataclass
@@ -29,6 +34,10 @@ class PlanStep:
     intent: str
     tool: str | None = None
     args: dict[str, Any] = field(default_factory=dict)
+    role: "AgentRole | None" = None
+    subplan_args: dict[str, Any] | None = None
+    pipeline: str | None = None
+    pipeline_args: dict[str, Any] | None = None
     success_criteria: str = ""
     on_failure: OnFailure = OnFailure.ASK
     timeout_s: int = 120
