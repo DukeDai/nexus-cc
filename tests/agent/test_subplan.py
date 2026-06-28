@@ -10,7 +10,7 @@ from src.agents.registry import RoleDefinition, RoleRegistry
 
 def _make_role_registry(spawn_return: Plan, *, raises: Exception | None = None) -> RoleRegistry:
     runtime = MagicMock()
-    runtime.plan_subplan = MagicMock(side_effect=raises) if raises else MagicMock(return_value=spawn_return)
+    runtime.plan_subplan = AsyncMock(side_effect=raises) if raises else AsyncMock(return_value=spawn_return)
     runtime.walk = AsyncMock(return_value=StepResult(step_id="sub-step", status="completed"))
     registry = RoleRegistry(runtime=runtime)
     registry.register(

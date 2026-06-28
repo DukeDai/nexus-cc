@@ -70,7 +70,7 @@ class RoleRegistry:
         """List all registered roles."""
         return list(self._roles.keys())
 
-    def spawn(self, role: AgentRole, task: str, context: dict[str, Any] | None = None) -> "Plan":
+    async def spawn(self, role: AgentRole, task: str, context: dict[str, Any] | None = None) -> "Plan":
         """Spawn a sub-plan for the given role.
 
         Args:
@@ -87,7 +87,7 @@ class RoleRegistry:
         if self._runtime is None:
             raise RuntimeError("RoleRegistry.spawn requires a runtime")
         definition = self.get(role)
-        return self._runtime.plan_subplan(
+        return await self._runtime.plan_subplan(
             role=role,
             definition=definition,
             task=task,

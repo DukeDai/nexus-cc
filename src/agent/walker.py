@@ -265,7 +265,7 @@ class PlanWalker:
 
         sub_plan: Plan | None = None
         try:
-            sub_plan = self.role_registry.spawn(
+            sub_plan = await self.role_registry.spawn(
                 role=step.role,
                 task=step.tool,
                 context=step.subplan_args or {},
