@@ -155,12 +155,40 @@ class SemanticIndex:
         self._chunks: list[SemanticEntry] = []
 
     def index_file(self, path: Path) -> None:
-        # Filled in Task 13.
-        ...
+        """Read file, split into ~50-line chunks, store entries."""
+        if not path.exists():
+            return
+        text = path.read_text(errors="replace")
+        lines = text.splitlines()
+        chunk_size = 50
+        for i in range(0, len(lines), chunk_size):
+            chunk_lines = lines[i : i + chunk_size]
+            if not chunk_lines:
+                continue
+            chunk_id = f"{path.name}:{i + 1}-{i + len(chunk_lines)}"
+            self._chunks.append(
+                SemanticEntry(
+                    chunk_id=chunk_id,
+                    path=path,
+                    start_line=i + 1,
+                    end_line=i + len(chunk_lines),
+                    content="\n".join(chunk_lines),
+                )
+            )
 
     def search(self, query: str, k: int = 5) -> list[SemanticEntry]:
-        # Filled in Task 13.
-        return []
+        """Return top-k chunks by substring/word overlap."""
+        if not self._chunks:
+            return []
+        query_words = set(query.lower().split())
+        scored = []
+        for chunk in self._chunks:
+            chunk_words = set(chunk.content.lower().split())
+            overlap = len(query_words & chunk_words)
+            if overlap > 0:
+                scored.append((overlap, chunk))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [chunk for _, chunk in scored[:k]]
 
 
 class SkillIndex:

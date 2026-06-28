@@ -1,6 +1,6 @@
 from pathlib import Path
 from unittest.mock import MagicMock
-from src.context.memory import MemoryStore, EpisodicEntry, EpisodicIndex, SemanticEntry
+from src.context.memory import MemoryStore, EpisodicEntry, EpisodicIndex, SemanticEntry, SemanticIndex
 
 
 def test_memory_store_constructs_with_empty_indexes():
@@ -75,3 +75,22 @@ def test_warm_skips_rebuild_when_wal_unchanged(tmp_path):
     store.warm()
     rebuild_count_second = len(store.episodic()._entries)
     assert rebuild_count_first == rebuild_count_second
+
+
+def test_semantic_index_indexes_file_in_chunks(tmp_path):
+    (tmp_path / "auth.py").write_text("def login():\n    pass\n" * 30)
+    idx = SemanticIndex(project_root=tmp_path)
+    idx.index_file(tmp_path / "auth.py")
+    assert len(idx._chunks) >= 1
+    assert all(c.path.name == "auth.py" for c in idx._chunks)
+
+
+def test_semantic_search_returns_matching_chunks(tmp_path):
+    (tmp_path / "auth.py").write_text("login function here\n" * 20)
+    (tmp_path / "util.py").write_text("utility helper\n" * 20)
+    idx = SemanticIndex(project_root=tmp_path)
+    idx.index_file(tmp_path / "auth.py")
+    idx.index_file(tmp_path / "util.py")
+    results = idx.search("login function", k=5)
+    assert len(results) >= 1
+    assert results[0].path.name == "auth.py"
