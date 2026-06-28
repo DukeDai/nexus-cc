@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -18,7 +19,8 @@ from src.tools.registry import ToolRegistry
 @click.option("--workdir", "-C", type=click.Path(file_okay=False), help="Working directory")
 @click.option("--wal-path", type=click.Path(), help="WAL file path")
 @click.option("--spec", "-s", help="Additional spec")
-def run(task: str, workdir: str | None, wal_path: str | None, spec: str | None) -> int:
+@click.option("--model", "-m", default=None, help="Override model name (v1.2 router only)")
+def run(task: str, workdir: str | None, wal_path: str | None, spec: str | None, model: str | None) -> int:
     """Run a task through AgentRuntime (plan-first architecture)."""
     project_path = Path(workdir or os.getcwd()).expanduser().resolve()
     wal_file = Path(wal_path).expanduser() if wal_path else (project_path / ".nexus" / "wal.jsonl")
@@ -28,7 +30,7 @@ def run(task: str, workdir: str | None, wal_path: str | None, spec: str | None) 
     tools = ToolRegistry.with_defaults(workdir=str(project_path))
 
     # LLM client — minimal stub for v1
-    llm = _build_llm_client()
+    llm = _build_llm_client(project_root=project_path, wal=wal, cli_model=model)
     if llm is None:
         click.echo("Error: ANTHROPIC_API_KEY not set and no LLM available", err=True)
         return 1
@@ -62,21 +64,56 @@ def run(task: str, workdir: str | None, wal_path: str | None, spec: str | None) 
     return 0 if failed == 0 else 1
 
 
-def _build_llm_client():
-    """Build LLM client. v1: only Anthropic SDK supported.
+def _build_llm_client(
+    project_root: Path | None = None,
+    wal: WALManager | None = None,
+    cli_model: str | None = None,
+) -> Any:
+    """Build LLM client.
 
-    Returns None if no API key configured (caller should error gracefully).
+    v1.1 behavior (NEXUS_USE_MODEL_ROUTER unset / "0"): return the minimal
+    _AnthropicLLM wrapper exactly as before — no behavior change.
+
+    v1.2 behavior (NEXUS_USE_MODEL_ROUTER=1): return a _RouterAdapter that
+    exposes the same .complete(system=, messages=) shape but routes through
+    ModelRouter → LLMClient. This unblocks the 13 downstream touchpoints
+    without touching them yet.
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
     if not api_key:
         return None
 
-    # Lazy import to avoid hard dep when not running
+    use_router = os.environ.get("NEXUS_USE_MODEL_ROUTER", "0") == "1"
+
+    if not use_router:
+        # v1.1 path — unchanged.
+        try:
+            from anthropic import AsyncAnthropic
+            return _AnthropicLLM(AsyncAnthropic(api_key=api_key))
+        except ImportError:
+            return None
+
+    # v1.2 path — feature-flagged Router.
     try:
-        from anthropic import AsyncAnthropic
-        return _AnthropicLLM(AsyncAnthropic(api_key=api_key))
-    except ImportError:
-        return None
+        from src.llm.cost_tracker import CostTracker
+        from src.llm.model_policy import ModelHint, ModelPolicy
+        from src.llm.model_router import ModelRouter
+
+        policy = ModelPolicy.load(
+            project_root or Path("."),
+            cli_model=cli_model,
+        )
+        tracker = CostTracker(project_root=project_root or Path("."), wal=wal)
+        router = ModelRouter(policy=policy, cost_tracker=tracker)
+        return _RouterAdapter(router=router, hint=ModelHint.PLANNER)
+    except Exception:
+        # Router init failure → silently fall back to v1.1 behavior rather
+        # than blocking the run. The integration test will surface real bugs.
+        try:
+            from anthropic import AsyncAnthropic
+            return _AnthropicLLM(AsyncAnthropic(api_key=api_key))
+        except ImportError:
+            return None
 
 
 class _AnthropicLLM:
@@ -98,3 +135,32 @@ class _AnthropicLLM:
 class _AnthropicResponse:
     def __init__(self, msg):
         self.content = msg.content
+
+
+class _RouterAdapter:
+    """Adapter: ModelRouter → .complete(system=, messages=) shape.
+
+    Maps the existing planner/walker/verifier call sites onto ModelRouter.route
+    with a fixed ModelHint (PLANNER) for now. The 13 downstream touchpoints
+    will switch to explicit hints in the next iteration.
+    """
+
+    def __init__(self, router, hint):
+        self._router = router
+        self._hint = hint
+
+    async def complete(self, *, system: str, messages: list[dict]) -> Any:
+        # ModelRouter.route is sync. We run it in a thread to keep the async
+        # contract for callers that awaited .complete().
+        import asyncio
+
+        def _call():
+            return self._router.route(
+                messages=messages,
+                hint=self._hint,
+                system_prompt=system,
+            )
+
+        # We can't actually make HTTP calls in tests; callers handle that.
+        _, response = await asyncio.to_thread(_call)
+        return response

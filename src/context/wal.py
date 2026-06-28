@@ -73,6 +73,19 @@ class WALManager:
     # Backwards-compat alias — v1.0 callers used this name.
     checkpoint_async = checkpoint
 
+    def append_cost(self, record: dict) -> None:
+        """Sync append of a cost record to the WAL JSONL.
+
+        v1.2: cost tracking is emitted from the Model Router hot path; sync
+        append keeps the API surface uniform with `iter_records` and avoids
+        forcing callers to schedule an async task. Records carry
+        `kind: "cost_record"` so they can be filtered out of step replay.
+        """
+        payload = {"kind": "cost_record", **record}
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with self._path.open("a") as f:
+            f.write(json.dumps(payload, default=str) + "\n")
+
     def iter_records(self):
         """Yield each JSON record in the WAL. v1 and v2 records both supported."""
         if not self._path.exists():
