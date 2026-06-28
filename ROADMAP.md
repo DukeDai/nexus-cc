@@ -32,22 +32,50 @@ Released. Full plan in `docs/superpowers/plans/2026-06-27-nexus-plan-first-redes
 
 ---
 
-## v1.1 — Q3 2026 — Sub-plans + MCP
+## v1.1 — Q3 2026 — Sub-plans + MCP ✅
 
-**Goals:**
-- **Sub-plans:** A TOOL step can return a sub-Plan that the walker executes inline (enables hierarchical task decomposition).
-- **MCP server wiring:** Expose Nexus itself as an MCP server so other tools (e.g., Claude Code) can invoke `nexus.plan` and `nexus.walk`.
-- **Model router:** Multi-provider support (Anthropic / OpenAI / Ollama / SCNET) routed by task complexity.
-- **Real WebSearch tool:** Replace v1 stub with Anthropic SDK web search tool wiring.
-- **Persistent plan storage:** Persist full `Plan.to_dict()` in WAL so `nexus session resume` can fully reconstruct, not just show cursor.
+**Delivered:**
+- SUBPLAN step kind + RoleRegistry — roles re-use existing role files unchanged
+- Three-layer memory: EpisodicIndex (WAL-derived), SemanticIndex (substring + opt-in embeddings), SkillIndex
+- Self-evolution feedback loop: Evolver + PromptTemplateRegistry with user-approval gate
+- Verification pipelines: named pipelines (security/tdd/test/review) for VERIFY steps
+- retry_with_feedback: verifier errors fed back to LLM on step failure
+- WAL v2 format: `format_version` header + `metadata` blocks; v1.0 WAL files load without changes
+- New CLI commands: `nexus session migrate`, `nexus role`, `nexus memory`, `nexus skill`, `nexus prompt`, `nexus evolve`
+- New TUI panels: VerifierPanel, MemoryPanel; new modals: SkillPickerModal, EvolveApprovalModal, PromptHistoryViewerModal
+- New keybindings: V, M, s, E, Ctrl-r
 
-**Open questions:**
-- Sub-plan abort semantics (does sub-plan abort bubble up to parent?)
-- MCP server: stdio or HTTP transport?
+**Changes from v1.0:**
+- `OnFailure` enum gains `RETRY_WITH_FEEDBACK`
+- `PlanStepKind` enum gains `SUBPLAN`
+- `PlanStep` gains optional `role`, `subplan_args`, `pipeline`, `pipeline_args` fields
+- WAL records gain `format_version` and optional `metadata` blocks
+
+**Migration guide:**
+- v1.0 WAL files load in v1.1 without changes
+- Optional: `nexus session migrate <plan_id>` produces a v2-normalized copy
+
+**Open questions (deferred):**
+- MCP server wiring (deferred to v1.2)
+- Model router (deferred to v1.2)
+- Real WebSearch tool (deferred to v1.2)
 
 ---
 
-## v2 — Q4 2026 — Self-Evolution Return
+## v2 — Q4 2026 — Self-Evolution Return (moved to Future)
+
+> Note: Self-evolution shipped in v1.1; v2 scope updated below.
+
+**Goals:**
+- Reintroduce `SelfEvolutionEngine` to learn from WAL error patterns.
+- Skill library: error → pattern → reusable prompt template.
+- A/B test framework for prompt variations.
+
+**Cuts from v1:** none expected.
+
+---
+
+## v3 — 2027 — Multi-Agent Speculation
 
 **Goals:**
 - Reintroduce `SelfEvolutionEngine` to learn from WAL error patterns.

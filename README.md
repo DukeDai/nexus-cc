@@ -6,6 +6,17 @@ Nexus is a Claude Code alternative with a **plan-first architecture**: every tas
 
 ---
 
+## What's New in v1.1
+
+- **Sub-agent roles:** `SUBPLAN` step kind + `RoleRegistry` wiring — roles re-use existing role files unchanged
+- **Three-layer memory:** `EpisodicIndex` (WAL-derived), `SemanticIndex` (substring + opt-in embeddings), `SkillIndex` (wraps existing loader)
+- **Self-evolution loop:** `Evolver` + `PromptTemplateRegistry` with user-approval gate — learns from WAL error patterns
+- **Verification pipelines:** `VERIFY` steps reference named pipelines (security/tdd/test/review)
+- **Retry-with-feedback:** `on_failure="retry_with_feedback"` feeds verifier errors back to the LLM
+- **WAL v2:** `format_version` header + `metadata` blocks; v1.0 WAL files still load
+
+---
+
 ## Why plan-first?
 
 | Aspect | Claude Code | Nexus v1 |
@@ -25,10 +36,28 @@ Nexus is a Claude Code alternative with a **plan-first architecture**: every tas
 git clone https://github.com/DukeDai/nexus-cc.git
 cd nexus-cc
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[test]"
+pip install -e ".[test,embeddings]"   # embeddings extra enables semantic memory
 ```
 
 Requires Python ≥ 3.12 and `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) for real LLM calls.
+
+---
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `nexus run --task "<prompt>"` | One-shot plan-build-and-walk |
+| `nexus tui` | Interactive TUI |
+| `nexus session list` | List plan IDs in WAL |
+| `nexus session resume <id>` | Show last cursor; full resume in TUI |
+| `nexus session migrate <id>` | Migrate WAL to v2 format |
+| `nexus role <name> [--file <path>]` | Show / register a role |
+| `nexus memory [query]` | Query episodic + semantic memory |
+| `nexus memory --index <path>` | Rebuild semantic index |
+| `nexus skill [query]` | Search skill index |
+| `nexus prompt [list\|show <name>]` | List / show prompt templates |
+| `nexus evolve [--dry-run]` | Run self-evolution on WAL patterns |
 
 ---
 
@@ -88,6 +117,11 @@ nexus session resume plan_abc12345 # show last cursor; full resume via TUI
 | `p` / `P` | Pause / Resume | At next step boundary |
 | `x` | Abort | Immediate |
 | `j` / `k` | Cursor down / up | In tree |
+| `V` | Open VerifierPanel | View / re-run verification pipeline |
+| `M` | Open MemoryPanel | Browse episodic + semantic memory |
+| `s` | Open SkillPickerModal | Search and insert skill |
+| `E` | Open EvolveApprovalModal | Review / approve evolution suggestions |
+| `Ctrl-r` | Re-run verifier | Re-execute current step's verification |
 | `?` | Help | |
 | `ctrl+c` | Quit | |
 

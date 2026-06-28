@@ -1,7 +1,7 @@
 # Nexus Architecture — Plan-First v1
 
-> **Version:** 1.0
-> **Last updated:** 2026-06-27
+> **Version:** 1.1
+> **Last updated:** 2026-06-28
 > **Goal:** Plan-first autonomous coding agent — every task becomes an explicit, editable `Plan` before any tool runs.
 
 ---
@@ -76,6 +76,13 @@ ControlChannel (src/agent/control.py)
 | `NewTaskModal` | `src/tui/new_task_modal.py` | 50 | Capture user task input |
 | `Tool` Protocol + `ToolRegistry` | `src/tools/base.py`, `src/tools/registry.py` | 90 | Tool discovery + dispatch |
 | 8 tools | `src/tools/{read,write,edit,bash,glob,grep,git,web_search}.py` | ~80 each | Built-in tools |
+| `RoleRegistry` | `src/agent/role_registry.py` | 60 | Sub-plan role lookup + wiring |
+| `MemoryStore`, `EpisodicIndex`, `SemanticIndex`, `SkillIndex` | `src/memory/` | 200 | Three-layer memory system |
+| `VerificationAdapter` | `src/agent/verification.py` | 80 | Pipeline-based step verification |
+| `PromptTemplateRegistry` | `src/evolution/prompt_registry.py` | 70 | Versioned prompt template CRUD |
+| `Evolver` | `src/evolution/evolver.py` | 90 | WAL analysis + suggestion generation |
+| `VerifierPanel`, `MemoryPanel` | `src/tui/verifier_panel.py`, `src/tui/memory_panel.py` | 150 each | New TUI panels |
+| `SkillPickerModal`, `EvolveApprovalModal`, `PromptHistoryViewerModal` | `src/tui/modals/` | 100 each | New TUI modals |
 
 ---
 
@@ -129,7 +136,40 @@ ControlChannel (src/agent/control.py)
 
 **Trade-off:** A reordered or removed step after checkpoint is silently re-run. Mitigation: TUI confirmation before mutations.
 
----
+### 3.7 SUBPLAN step kind + RoleRegistry
+
+**Constraint:** A `SUBPLAN` step carries a `role` name + optional `subplan_args`. The walker calls `RoleRegistry.get_role(role)` → `RoleDefinition` → executes role's sub-plan inline.
+
+**Why:** Enables hierarchical task decomposition where each sub-plan runs in the context of a named role (e.g., "reviewer", "implementer"). Existing role files are re-used unchanged.
+
+**Trade-off:** Sub-plan abort semantics are inherited from parent (abort bubbles up). WAL cursor is shared between parent and sub-plan.
+
+### 3.8 Memory layer (three indexes)
+
+**Constraint:** `MemoryStore` exposes three indexes:
+- `EpisodicIndex` — derived from WAL records (plan_id, step_id, tool, args, result, timestamp)
+- `SemanticIndex` — substring search over all indexed text + optional embedding-based similarity (`[embeddings]` extra)
+- `SkillIndex` — wraps `SkillLoader`, keyed by skill name
+
+**Why:** Planner injects relevant memory context before generating a plan. Memory is append-only (no deletion).
+
+**Trade-off:** Semantic index requires `pip install nexus-cc[embeddings]` for embedding support. Without it, falls back to substring-only search.
+
+### 3.9 Self-evolution feedback loop
+
+**Constraint:** After each walk, `AgentRuntime.post_walk_hook()` calls `Evolver.analyze_wal(plan_id)`. If patterns found, suggestions are staged in `PromptTemplateRegistry` pending user approval via `EvolveApprovalModal`.
+
+**Why:** Nexus learns from its own WAL error patterns (step failures, retry counts) to improve prompt templates over time. User always approves before templates are updated.
+
+**Trade-off:** Evolution runs asynchronously; does not block walk completion. Approval is required — no automatic template overwriting.
+
+### 3.10 WAL v2 format
+
+**Constraint:** WAL v2 adds a `format_version: 2` header line and optional `metadata` blocks per record. v1 WAL files (`{plan_id, version, cursor, result}`) load without migration.
+
+**Why:** Enables forward-compatible schema evolution. `nexus session migrate <id>` produces a v2-normalized copy with full `Plan.to_dict()` in `metadata`.
+
+**Trade-off:** WAL v1 and v2 coexist in `.nexus/wal.jsonl`. Migration is one-way (v2 writer produces v2-only; v1 reader skips unknown fields).
 
 ## 4. Async Concurrency Model
 
@@ -186,11 +226,10 @@ Total overhead per step: <10ms excluding tool time.
 
 ---
 
-## 8. Future Architecture (v1.1+)
+## 8. Future Architecture (v1.2+)
 
-- **Sub-plans:** A TOOL step returns a sub-Plan; walker executes inline with shared WAL.
-- **MCP server:** Expose `nexus.plan` and `nexus.walk` as MCP tools.
+- **MCP server:** Expose `nexus.plan` and `nexus.walk` as MCP tools (deferred from v1.1).
 - **Multi-agent speculation:** Replace sequential walker with `TaskGraph` executor; independent steps run via `asyncio.gather`.
-- **Self-evolution engine:** Re-read WAL error patterns to suggest prompt improvements.
+- **Model router:** Multi-provider support (Anthropic / OpenAI / Ollama / SCNET) routed by task complexity.
 
-See `ROADMAP.md` for timeline.
+Self-evolution shipped in v1.1. See `ROADMAP.md` for updated timeline.
