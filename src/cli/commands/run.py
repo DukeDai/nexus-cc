@@ -122,7 +122,9 @@ class _AnthropicLLM:
     def __init__(self, client):
         self._client = client
 
-    async def complete(self, *, system: str, messages: list[dict]) -> "_AnthropicResponse":
+    async def complete(self, *, system: str, messages: list[dict], **kwargs) -> "_AnthropicResponse":
+        # `**kwargs` swallows v1.2 routing kwargs (e.g. model_hint) so callers
+        # like Planner.plan() can pass them uniformly; legacy client ignores them.
         msg = await self._client.messages.create(
             model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
             max_tokens=4096,
@@ -140,24 +142,33 @@ class _AnthropicResponse:
 class _RouterAdapter:
     """Adapter: ModelRouter → .complete(system=, messages=) shape.
 
-    Maps the existing planner/walker/verifier call sites onto ModelRouter.route
-    with a fixed ModelHint (PLANNER) for now. The 13 downstream touchpoints
-    will switch to explicit hints in the next iteration.
+    Maps the existing planner/walker/verifier call sites onto ModelRouter.route.
+    Each call may pass ``model_hint=...`` to override the adapter's default
+    hint (used for sub-plan call sites that need a different ModelHint than
+    the surrounding context, e.g. CRITIQUE sub-plans).
     """
 
     def __init__(self, router, hint):
         self._router = router
         self._hint = hint
 
-    async def complete(self, *, system: str, messages: list[dict]) -> Any:
+    async def complete(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        model_hint: Any | None = None,
+    ) -> Any:
         # ModelRouter.route is sync. We run it in a thread to keep the async
         # contract for callers that awaited .complete().
         import asyncio
 
+        hint = model_hint if model_hint is not None else self._hint
+
         def _call():
             return self._router.route(
                 messages=messages,
-                hint=self._hint,
+                hint=hint,
                 system_prompt=system,
             )
 

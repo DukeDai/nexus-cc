@@ -14,7 +14,7 @@ class FakeLLM:
     def __init__(self) -> None:
         self.last_system: str = ""
 
-    async def complete(self, *, system: str, messages: list[dict]) -> MagicMock:
+    async def complete(self, *, system: str, messages: list[dict], **kwargs) -> MagicMock:
         self.last_system = system
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text='{"spec":"t","assumptions":[],"risks":[],"steps":[]}')]

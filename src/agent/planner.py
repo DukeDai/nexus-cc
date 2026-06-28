@@ -5,6 +5,8 @@ import json
 import re
 from typing import Any
 
+from src.llm.model_policy import ModelHint
+
 from .plan import Plan, PlanStep, PlanStepKind, OnFailure, new_plan_id, new_step_id
 
 
@@ -100,7 +102,22 @@ class Planner:
         *,
         spec: str | None = None,
         memory_context: str = "",
+        model_hint: ModelHint = ModelHint.PLANNER,
     ) -> Plan:
+        """Generate a structured Plan from a task description.
+
+        Args:
+            task: Natural-language task description.
+            spec: Optional additional spec content.
+            memory_context: Past-similar-tasks context to prepend to the system prompt.
+            model_hint: Hint consumed by the v1.2 ModelRouter (when the feature
+                flag ``NEXUS_USE_MODEL_ROUTER=1`` is set, the underlying
+                ``_RouterAdapter`` will route this call to the model resolved
+                for ``model_hint``). Defaults to ``ModelHint.PLANNER``. CRITIQUE
+                sub-plans should pass ``ModelHint.CRITIQUE``. When the flag is
+                unset, the legacy ``LLMClient`` is used and this argument has no
+                effect — behavior is unchanged.
+        """
         user_msg = f"Task: {task}"
         if spec:
             user_msg += f"\n\nAdditional spec:\n{spec}"
@@ -113,6 +130,7 @@ class Planner:
             response = await self._llm.complete(
                 system=full_system,
                 messages=[{"role": "user", "content": user_msg + extra}],
+                model_hint=model_hint,
             )
             text = response.content[0].text
             try:

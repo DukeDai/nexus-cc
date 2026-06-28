@@ -17,7 +17,7 @@ class FakeLLM:
     def __init__(self, plan_json: str) -> None:
         self._plan_json = plan_json
 
-    async def complete(self, *, system: str, messages: list[dict]) -> MagicMock:
+    async def complete(self, *, system: str, messages: list[dict], **kwargs) -> MagicMock:
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text=self._plan_json)]
         return mock_response

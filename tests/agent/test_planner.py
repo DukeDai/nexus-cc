@@ -15,7 +15,7 @@ class FakeLLM:
         self._responses = responses
         self._call_count = 0
 
-    async def complete(self, *, system: str, messages: list[dict]) -> MagicMock:
+    async def complete(self, *, system: str, messages: list[dict], **kwargs) -> MagicMock:
         """Return the next response in the list."""
         idx = min(self._call_count, len(self._responses) - 1)
         text = self._responses[idx]
