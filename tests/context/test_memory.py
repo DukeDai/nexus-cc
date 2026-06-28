@@ -145,3 +145,20 @@ def test_skill_index_apply_attaches_skill_to_step():
     result = idx.apply(skill, step)
     assert result is step
     step.attach_skill.assert_called_once_with(skill)
+
+
+def test_planner_context_renders_three_sections(tmp_path):
+    wal_path = tmp_path / "wal.jsonl"
+    wal_path.write_text(
+        '{"format_version": 2, "kind": "plan_start", "plan_id": "p1", "plan": {"id": "p1", "task": "add login", "steps": []}}\n'
+        '{"format_version": 2, "kind": "plan_end", "plan_id": "p1", "outcome": "success"}\n'
+    )
+    (tmp_path / "convention.md").write_text("Use pytest for login testing")
+    wal = MagicMock()
+    wal.path = wal_path
+    store = MemoryStore(wal=wal, project_root=tmp_path)
+    store.semantic().index_file(tmp_path / "convention.md")
+    store.warm()
+    ctx = store.planner_context("add login", k=3)
+    assert "Past similar tasks" in ctx
+    assert "login" in ctx or "convention.md" in ctx

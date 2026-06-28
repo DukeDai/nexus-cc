@@ -276,5 +276,28 @@ class MemoryStore:
 
     def planner_context(self, task: str, k: int = 5) -> str:
         """Render memory as context block to inject into Planner prompt."""
-        # Filled in Task 16.
-        return ""
+        blocks = []
+        similar = self._episodic_idx.similar_past(task, k=k)
+        if similar:
+            lines = ["# Past similar tasks"]
+            for entry in similar:
+                lines.append(
+                    f"- {entry.created_at.date()}: task={entry.task!r}, "
+                    f"outcome={entry.outcome}, duration={entry.duration_s:.1f}s, "
+                    f"steps={entry.step_count}"
+                )
+            blocks.append("\n".join(lines))
+        chunks = self._semantic_idx.search(task, k=k)
+        if chunks:
+            lines = ["# Project conventions"]
+            for chunk in chunks[:3]:
+                lines.append(f"- {chunk.path.name}:{chunk.start_line}: {chunk.content[:80].strip()}")
+            blocks.append("\n".join(lines))
+        suggestions = self._skill_idx.suggest(task, plan=None)
+        if suggestions:
+            lines = ["# Suggested skills"]
+            for s in suggestions[:3]:
+                name = s.get("name") if isinstance(s, dict) else getattr(s, "name", str(s))
+                lines.append(f"- {name}")
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
