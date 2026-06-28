@@ -29,7 +29,6 @@ def _make_role_registry(spawn_return: Plan, *, raises: Exception | None = None) 
 async def test_execute_subplan_returns_completed_when_subplan_succeeds():
     registry, runtime = _make_role_registry(spawn_return=Plan(plan_id="p_sub", spec="sub"))
     walker = PlanWalker(
-        plan=Plan(plan_id="p_parent", spec="parent", steps=[]),
         channel=MagicMock(),
         tools=MagicMock(),
         wal=MagicMock(),
@@ -55,7 +54,6 @@ async def test_execute_subplan_returns_failed_when_subplan_aborts():
         raises=PlanAborted("user pressed x"),
     )
     walker = PlanWalker(
-        plan=Plan(plan_id="p_parent", spec="parent", steps=[]),
         channel=MagicMock(),
         tools=MagicMock(),
         wal=MagicMock(),
@@ -77,7 +75,6 @@ async def test_execute_subplan_returns_failed_when_subplan_aborts():
 @pytest.mark.asyncio
 async def test_execute_subplan_raises_when_registry_missing():
     walker = PlanWalker(
-        plan=Plan(plan_id="p_parent", spec="parent", steps=[]),
         channel=MagicMock(),
         tools=MagicMock(),
         wal=MagicMock(),

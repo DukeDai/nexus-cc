@@ -49,7 +49,6 @@ class PlanWalker:
     def __init__(
         self,
         *,
-        plan: Plan,
         channel: ControlChannel,
         tools: Any,
         verification: Any = None,
@@ -57,7 +56,6 @@ class PlanWalker:
         wal: Any = None,
         role_registry: RoleRegistry | None = None,
     ) -> None:
-        self.plan = plan
         self._channel = channel
         self._tools = tools
         self._verification = verification
