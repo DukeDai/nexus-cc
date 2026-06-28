@@ -58,6 +58,24 @@ class VerificationAdapter:
     def list_pipelines(self) -> list[str]:
         return list(self._pipelines.keys())
 
+    def register_defaults(self) -> None:
+        """Register the 4 default verification pipelines.
+
+        Uses a single VerificationPipeline instance registered under 4 names
+        (security, tdd, test, review). Each name maps to the same pipeline
+        orchestrator which coordinates all 4 gates.
+        """
+        from src.verification import VerificationPipeline
+
+        # Create a no-op delegate for the pipeline
+        def noop_delegate(task: str, ctx: dict[str, Any]) -> dict[str, Any]:
+            return {}
+
+        # Create a single pipeline instance
+        pipeline = VerificationPipeline(delegate_task=noop_delegate)
+        for name in ("security", "tdd", "test", "review"):
+            self.register(name, pipeline)
+
     async def run(
         self,
         step: PlanStep,

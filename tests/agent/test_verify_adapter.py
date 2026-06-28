@@ -41,3 +41,13 @@ async def test_run_raises_for_unregistered_pipeline():
     step = PlanStep(id="step-1", kind=PlanStepKind.VERIFY, intent="Verify", pipeline="nonexistent")
     with pytest.raises(KeyError):
         await adapter.run(step, StepResult(step_id="step-1", status="completed"), ctx=MagicMock())
+
+
+def test_register_defaults_includes_four_pipelines():
+    adapter = VerificationAdapter(wal=MagicMock())
+    adapter.register_defaults()
+    names = adapter.list_pipelines()
+    assert "security" in names
+    assert "tdd" in names
+    assert "test" in names
+    assert "review" in names
