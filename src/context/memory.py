@@ -7,6 +7,7 @@ embeddings), and skill library (wraps src/skills/loader.py).
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -57,16 +58,90 @@ class EpisodicIndex:
         self._entries: dict[str, EpisodicEntry] = {}
 
     def rebuild(self) -> None:
-        # Filled in Task 11.
-        ...
+        """Scan WAL JSONL, build EpisodicEntry per completed plan, write cache."""
+        plans: dict[str, dict[str, Any]] = {}
+        completed_steps: dict[str, list[str]] = {}
+        outcomes: dict[str, str] = {}
+        durations: dict[str, float] = {}
+        error_cats: dict[str, list[str]] = {}
+
+        # Walk WAL file directly (EpisodicIndex is a derived view, not a WAL client).
+        if not self._wal.path.exists():
+            return
+        for line in self._wal.path.read_text().splitlines():
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            kind = rec.get("kind")
+            plan_id = rec.get("plan_id")
+            if kind == "plan_start":
+                plans[plan_id] = rec.get("plan", {})
+                completed_steps[plan_id] = []
+                durations[plan_id] = rec.get("started_at", 0)
+            elif kind == "step_complete":
+                completed_steps.setdefault(plan_id, []).append(rec.get("cursor"))
+                if rec.get("result", {}).get("error"):
+                    error_cats.setdefault(plan_id, []).append(
+                        rec["result"].get("error_category", "unknown")
+                    )
+            elif kind == "plan_end":
+                outcomes[plan_id] = rec.get("outcome", "unknown")
+                durations[plan_id] = rec.get("ended_at", 0) - durations[plan_id]
+
+        self._entries.clear()
+        for plan_id, plan_dict in plans.items():
+            steps = plan_dict.get("steps", [])
+            self._entries[plan_id] = EpisodicEntry(
+                plan_id=plan_id,
+                plan_hash=EpisodicEntry.plan_hash_of(plan_dict),
+                task=plan_dict.get("task", ""),
+                outcome=outcomes.get(plan_id, "unknown"),
+                duration_s=durations.get(plan_id, 0.0),
+                step_count=len(steps),
+                failed_step_ids=[
+                    s.get("id") for s in steps if s.get("id") not in completed_steps.get(plan_id, [])
+                ],
+                error_categories=error_cats.get(plan_id, []),
+            )
+        self._write_cache()
+
+    def _write_cache(self) -> None:
+        self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._cache_path.open("w") as f:
+            for entry in self._entries.values():
+                f.write(json.dumps({
+                    "plan_id": entry.plan_id,
+                    "plan_hash": entry.plan_hash,
+                    "task": entry.task,
+                    "outcome": entry.outcome,
+                    "duration_s": entry.duration_s,
+                    "step_count": entry.step_count,
+                    "failed_step_ids": entry.failed_step_ids,
+                    "error_categories": entry.error_categories,
+                    "created_at": entry.created_at.isoformat(),
+                }) + "\n")
 
     def similar_past(self, task: str, k: int = 5) -> list[EpisodicEntry]:
-        # Filled in Task 11.
-        return []
+        """Return top-k past plans by substring overlap with task."""
+        if not self._entries:
+            return []
+        task_words = set(task.lower().split())
+        scored = []
+        for entry in self._entries.values():
+            entry_words = set(entry.task.lower().split())
+            overlap = len(task_words & entry_words)
+            if overlap > 0:
+                scored.append((overlap, entry))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [entry for _, entry in scored[:k]]
 
     def success_rate(self, error_category: str) -> float:
-        # Filled in Task 11.
-        return 0.0
+        if not self._entries:
+            return 0.0
+        matching = [e for e in self._entries.values() if error_category in e.error_categories]
+        if not matching:
+            return 1.0
+        return sum(1 for e in matching if e.outcome == "success") / len(matching)
 
 
 class SemanticIndex:
