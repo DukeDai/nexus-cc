@@ -8,6 +8,7 @@ from textual.containers import Container
 from textual.widgets import Tree
 
 from ..agent.control import Command, CommandKind, ControlChannel
+from ..agent.plan import Plan, PlanStep, PlanStepKind
 from ..agent.events import (
     PlanStarted,
     StepCompleted,
@@ -59,9 +60,10 @@ class PlanPanel(Container):
         """Public alias for tests / external callers (mirrors plan naming)."""
         return self.plan_tree
 
-    def __init__(self, *, channel: ControlChannel, **kwargs) -> None:
+    def __init__(self, *, channel: ControlChannel, plan: Plan | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.channel = channel
+        self.plan: Plan | None = plan
         self.plan_tree: Tree = Tree("Plan")
 
     def compose(self):
@@ -101,6 +103,27 @@ class PlanPanel(Container):
         """Format a step's display label."""
         intent = (step.intent or "")[:50]
         return f"{marker} {step.kind.value}: {intent}"
+
+    # ------------------------------------------------------------------ subplan
+
+    def render_step(self, step: PlanStep, depth: int = 0) -> str:
+        """Render a single step as a string, with SUBPLAN getting role label."""
+        indent = "  " * depth
+        if step.kind == PlanStepKind.SUBPLAN:
+            role_name = step.role.name if step.role else "?"
+            task_preview = (step.tool or "")[:40]
+            return f"{indent}▸ SUBPLAN ({role_name}) — {task_preview!r}"
+        # Fallback for other step kinds
+        return f"{indent}{step.kind.value}: {step.intent or ''}"
+
+    def render_plan_tree(self) -> str:
+        """Render the full plan as a newline-separated string."""
+        if not self.plan:
+            return ""
+        lines = []
+        for step in self.plan.steps:
+            lines.append(self.render_step(step))
+        return "\n".join(lines)
 
     def _mark_step(self, step_id: str, marker: str) -> None:
         """Find the node with the given step_id and prepend the marker."""
