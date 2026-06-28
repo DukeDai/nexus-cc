@@ -1,0 +1,3 @@
+{"kind": "plan_start", "plan_id": "p_failed", "version": 1, "plan": {"id": "p_failed", "task": "deploy", "steps": [{"id": "s1", "kind": "tool", "tool": "Bash"}]}}
+{"kind": "step_complete", "plan_id": "p_failed", "cursor": "s1", "result": {"status": "failed", "error": "permission denied"}}
+{"kind": "plan_end", "plan_id": "p_failed", "outcome": "failed"}

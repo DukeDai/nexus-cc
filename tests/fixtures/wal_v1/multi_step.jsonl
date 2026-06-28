@@ -1,0 +1,4 @@
+{"kind": "plan_start", "plan_id": "p_multi", "version": 1, "plan": {"id": "p_multi", "task": "refactor", "steps": [{"id": "s1", "kind": "tool", "tool": "Read"}, {"id": "s2", "kind": "tool", "tool": "Edit"}, {"id": "s3", "kind": "verify", "tool": null}]}}
+{"kind": "step_complete", "plan_id": "p_multi", "cursor": "s1", "result": {"status": "completed"}}
+{"kind": "step_complete", "plan_id": "p_multi", "cursor": "s2", "result": {"status": "completed"}}
+{"kind": "plan_end", "plan_id": "p_multi", "outcome": "success"}
