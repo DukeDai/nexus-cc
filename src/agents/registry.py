@@ -14,7 +14,7 @@ from .base import AgentRole, ModelTier
 if TYPE_CHECKING:
     from src.agent.plan import Plan
     from src.agent.runtime import AgentRuntime
-    from src.agent.control import OnFailure
+    from src.agent.plan import OnFailure
 
 
 @dataclass
