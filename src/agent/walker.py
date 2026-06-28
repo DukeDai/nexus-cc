@@ -19,6 +19,7 @@ from .events import (
 )
 from .plan import OnFailure, Plan, PlanStep, PlanStepKind
 from src.agents.registry import RoleRegistry  # noqa: F401 - type hints only
+from src.llm.model_policy import ModelHint
 
 
 MAX_RETRIES_PER_STEP = 2
@@ -139,7 +140,7 @@ class PlanWalker:
         elif step.kind == PlanStepKind.VERIFY:
             return await self._execute_verify(step, StepResult(step_id=step.id, status="completed"))
         elif step.kind == PlanStepKind.CRITIQUE:
-            return await self._execute_critique_step(step)
+            return await self._execute_critique_step(step, model_hint=ModelHint.CRITIQUE)
         elif step.kind == PlanStepKind.ASK_USER:
             return await self._execute_ask_user_step(step)
         else:
@@ -199,8 +200,23 @@ class PlanWalker:
             raise StepFailure(step.id, f"verification failed: {result.get('details', result)}")
         return StepResult(step_id=step.id, status="done", output=result)
 
-    async def _execute_critique_step(self, step: PlanStep) -> StepResult:
-        """Execute a CRITIQUE step: prompt LLM to self-review the step outcome."""
+    async def _execute_critique_step(
+        self,
+        step: PlanStep,
+        *,
+        model_hint: ModelHint = ModelHint.CRITIQUE,
+    ) -> StepResult:
+        """Execute a CRITIQUE step: prompt LLM to self-review the step outcome.
+
+        Args:
+            step: The CRITIQUE PlanStep to execute.
+            model_hint: Hint consumed by the v1.2 ModelRouter (when the feature
+                flag ``NEXUS_USE_MODEL_ROUTER=1`` is set, the underlying
+                ``_RouterAdapter`` will route this call to the model resolved
+                for ``model_hint``). Defaults to ``ModelHint.CRITIQUE``. When
+                the flag is unset, the legacy ``LLMClient`` is used and this
+                argument has no effect — behavior is unchanged.
+        """
         if self._llm is None:
             raise StepFailure(step.id, "CRITIQUE step requires LLM client")
         context = step.args.get("context", "")
@@ -213,6 +229,7 @@ class PlanWalker:
         response = await self._llm.complete(
             system="You critique step outcomes.",
             messages=[{"role": "user", "content": user_msg}],
+            model_hint=model_hint,
         )
         text = response.content[0].text
         try:
