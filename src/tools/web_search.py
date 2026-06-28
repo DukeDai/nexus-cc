@@ -17,9 +17,9 @@ class WebSearchTool:
     }
 
     async def execute(self, *, query: str, max_results: int = 5) -> dict[str, Any]:
-        # v1 stub: real impl requires Anthropic SDK web search tool wiring
-        return {
-            "results": [
-                {"title": "stub", "url": "", "snippet": "WebSearch not yet wired"}
-            ]
-        }
+        # v1 stub: real impl requires Anthropic SDK web search tool wiring.
+        # Raise loudly rather than return a fake success — silent placeholders
+        # can leak into agent pipelines and downstream user-visible output.
+        raise NotImplementedError(
+            "WebSearch is not yet wired (requires Anthropic SDK web search tool)"
+        )

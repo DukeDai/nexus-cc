@@ -7,16 +7,11 @@ from src.tools.web_search import WebSearchTool
 
 
 @pytest.mark.asyncio
-async def test_web_search_returns_stub():
-    """WebSearchTool.execute should return the stub dict."""
+async def test_web_search_raises_not_implemented():
+    """WebSearchTool.execute must raise NotImplementedError until wired."""
     tool = WebSearchTool()
-    result = await tool.execute(query="hello")
-    assert isinstance(result, dict)
-    assert "results" in result
-    assert isinstance(result["results"], list)
-    assert len(result["results"]) == 1
-    assert result["results"][0]["title"] == "stub"
-    assert "WebSearch not yet wired" in result["results"][0]["snippet"]
+    with pytest.raises(NotImplementedError, match="not yet wired"):
+        await tool.execute(query="hello")
 
 
 def test_web_search_metadata():
