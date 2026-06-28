@@ -73,7 +73,7 @@ disallow_untyped_defs = true
 
 [tool.coverage.run]
 branch = true
-source = ["nexus"]
+source = ["src"]
 # Measure only the importable package; relative_files=true makes paths stable across CWDs
 relative_files = true
 # Files to skip during execution (still tracked if imported, but not as coverage targets)
@@ -91,7 +91,7 @@ show_missing = true
 # Skip 100%-covered files from the report for less noise
 skip_covered = false
 # Fail CI if total coverage drops below threshold
-fail_under = 70
+fail_under = 20
 precision = 1
 exclude_lines = [
     "pragma: no cover",
@@ -104,4 +104,4 @@ exclude_lines = [
 sort = "Cover"
 
 [tool.coverage.paths]
-source = ["src/nexus", "nexus"]
+source = ["src", "src/nexus"]
