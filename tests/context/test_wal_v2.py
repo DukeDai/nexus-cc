@@ -1,5 +1,7 @@
 import json
+import pytest
 from pathlib import Path
+from src.agent.plan import Plan, new_plan_id
 from src.context.wal import WALManager
 
 
@@ -24,11 +26,15 @@ def test_v1_wal_loads_in_v2_reader(tmp_path):
     assert records[0]["plan_id"] == "p1"
 
 
-def test_checkpoint_with_metadata_writes_metadata_field(tmp_path):
+@pytest.mark.asyncio
+async def test_checkpoint_with_metadata_writes_metadata_field(tmp_path):
     wal = WALManager(path=tmp_path / "wal.jsonl")
     wal.initialize()
-    wal.checkpoint(plan_id="p1", version=1, cursor="s1", result={"status": "completed"},
-                   metadata={"subplan_result": {"status": "completed"}})
+    plan = Plan(plan_id="p1", spec="t", version=1)
+    await wal.checkpoint(
+        plan=plan, cursor="s1", result={"status": "completed"},
+        metadata={"subplan_result": {"status": "completed"}},
+    )
     last_line = wal.path.read_text().splitlines()[-1]
     rec = json.loads(last_line)
     assert rec["metadata"]["subplan_result"]["status"] == "completed"

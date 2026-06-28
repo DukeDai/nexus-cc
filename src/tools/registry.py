@@ -17,8 +17,19 @@ class ToolRegistry:
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool:
-        """Get a tool by name. Raises KeyError if not found."""
-        return self._tools[name]
+        """Get a tool by name. Case-insensitive lookup tolerates LLM output variations.
+
+        Raises KeyError if no tool (case-insensitively) matches.
+        """
+        # Fast path: exact match (most common).
+        if name in self._tools:
+            return self._tools[name]
+        # Slow path: case-insensitive scan for LLM-emitted "bash" vs registered "Bash".
+        lowered = name.lower()
+        for key, tool in self._tools.items():
+            if key.lower() == lowered:
+                return tool
+        raise KeyError(f"tool not registered: {name!r}")
 
     def all_tools(self) -> list[Tool]:
         """Return all registered tools."""
@@ -29,7 +40,7 @@ class ToolRegistry:
         return list(self._tools.keys())
 
     async def execute(self, name: str, args: dict[str, Any]) -> Any:
-        """Execute a tool by name with the given arguments.
+        """Execute a tool by name with the given arguments (case-insensitive).
 
         Args:
             name: The name of the tool to execute.

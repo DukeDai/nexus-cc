@@ -30,6 +30,11 @@ class PlanPanel(Container):
     AgentRuntime can react (approve, reject, pause, resume, abort).
     """
 
+    # The panel owns plan-level key bindings (a/r/e/d/i). It must be
+    # focusable so those bindings actually receive key events — without
+    # this, the user can't trigger approve/reject from the keyboard.
+    can_focus = True
+
     BINDINGS = [
         ("a", "approve", "Approve"),
         ("r", "reject", "Reject"),

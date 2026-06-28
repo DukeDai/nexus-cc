@@ -42,30 +42,21 @@ class WALManager:
                 "nexus_version": "1.1.0",
             }) + "\n")
 
-    def checkpoint(
+    async def checkpoint(
         self,
-        plan_id: str,
-        version: int,
+        *,
+        plan: Plan,
         cursor: str,
-        result: dict,
-        metadata: dict | None = None,
+        result: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
-        record = {
-            "format_version": WAL_FORMAT_VERSION,
-            "kind": "step_complete",
-            "plan_id": plan_id,
-            "version": version,
-            "cursor": cursor,
-            "result": result,
-        }
-        if metadata is not None:
-            record["metadata"] = metadata
-        with self._path.open("a") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+        """Async checkpoint using a Plan object (v1.1 canonical API).
 
-    async def checkpoint_async(self, *, plan: Plan, cursor: str, result: dict[str, Any] | None = None) -> None:
-        """Async checkpoint using a Plan object (v1 API)."""
-        entry = {
+        Accepts a Plan directly so callers don't have to thread plan_id/version
+        through every step. Optional metadata block lets callers tag sub-plan
+        results, verifier outcomes, etc., per WAL v2 schema.
+        """
+        record = {
             "format_version": WAL_FORMAT_VERSION,
             "kind": "step_complete",
             "plan_id": plan.plan_id,
@@ -73,9 +64,14 @@ class WALManager:
             "cursor": cursor,
             "result": result or {},
         }
+        if metadata is not None:
+            record["metadata"] = metadata
         async with self._lock:
             with self._path.open("a") as f:
-                f.write(json.dumps(entry) + "\n")
+                f.write(json.dumps(record, default=str) + "\n")
+
+    # Backwards-compat alias — v1.0 callers used this name.
+    checkpoint_async = checkpoint
 
     def iter_records(self):
         """Yield each JSON record in the WAL. v1 and v2 records both supported."""

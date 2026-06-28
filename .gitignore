@@ -2,3 +2,10 @@
 .venv/
 .claude/
 **/__pycache__/
+nexus.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+build/
+dist/

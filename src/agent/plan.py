@@ -64,19 +64,25 @@ class Plan:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Plan:
-        steps = [
-            PlanStep(
+        # Coerce kind/on_failure strings leniently (accept both "TOOL" and "tool").
+        def _coerce(enum_cls, value, default):
+            try:
+                return enum_cls(value)
+            except (ValueError, KeyError):
+                return enum_cls(str(value).lower()) if value else default
+
+        steps = []
+        for s in d.get("steps", []):
+            steps.append(PlanStep(
                 id=s["id"],
-                kind=PlanStepKind(s["kind"]),
+                kind=_coerce(PlanStepKind, s["kind"], PlanStepKind.TOOL),
                 intent=s["intent"],
                 tool=s.get("tool"),
                 args=s.get("args", {}),
                 success_criteria=s.get("success_criteria", ""),
-                on_failure=OnFailure(s.get("on_failure", "ask")),
+                on_failure=_coerce(OnFailure, s.get("on_failure", "ask"), OnFailure.ASK),
                 timeout_s=s.get("timeout_s", 120),
-            )
-            for s in d.get("steps", [])
-        ]
+            ))
         return cls(
             plan_id=d["plan_id"],
             spec=d["spec"],

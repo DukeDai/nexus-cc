@@ -124,8 +124,8 @@ async def test_e2e_wal_replay_skips_completed_subplan_step(tmp_path):
     """On WAL replay, completed SUBPLAN step is auto-skipped."""
     wal = _make_wal(tmp_path)
     # Pre-populate WAL with a completed SUBPLAN step record.
-    wal.checkpoint(
-        plan_id="p1", version=1, cursor="step-1", result={"status": "completed"},
+    await wal.checkpoint(
+        plan=Plan(plan_id="p1", spec="t", version=1), cursor="step-1", result={"status": "completed"},
         metadata={"subplan_result": {"status": "completed"}},
     )
     completed = wal.get_completed_step_ids("p1")

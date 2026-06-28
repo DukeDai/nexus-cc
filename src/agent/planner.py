@@ -46,14 +46,27 @@ def _parse_plan_json(text: str) -> Plan:
     data = json.loads(text)
     steps = []
     for s in data.get("steps", []):
+        # Accept both "TOOL" (enum member name) and "tool" (enum value).
+        # SYSTEM_PROMPT instructs the LLM to emit the former; real models
+        # sometimes emit lowercase. Normalize to the enum value.
+        raw_kind = str(s["kind"]).strip()
+        try:
+            kind = PlanStepKind(raw_kind)
+        except ValueError:
+            kind = PlanStepKind(raw_kind.lower())
+        raw_on_failure = s.get("on_failure", "ask")
+        try:
+            on_failure = OnFailure(raw_on_failure)
+        except ValueError:
+            on_failure = OnFailure(str(raw_on_failure).lower())
         steps.append(PlanStep(
             id=s.get("id") or new_step_id(),
-            kind=PlanStepKind(s["kind"]),
+            kind=kind,
             intent=s["intent"],
             tool=s.get("tool"),
             args=s.get("args", {}),
             success_criteria=s.get("success_criteria", ""),
-            on_failure=OnFailure(s.get("on_failure", "ask")),
+            on_failure=on_failure,
             timeout_s=int(s.get("timeout_s", 120)),
         ))
     return Plan(
