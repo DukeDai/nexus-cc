@@ -21,8 +21,8 @@ from .store import SessionStore
 
 def _get_ralphloop_classes():
     """Lazy import to avoid top-level package issues with relative imports."""
-    from ralphloop.orchestrator import RalphLoop
-    from ralphloop.states import RalphState
+    from src.ralphloop.orchestrator import RalphLoop
+    from src.ralphloop.states import RalphState
     return RalphLoop, RalphState
 
 

@@ -7,18 +7,9 @@ Usage:
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Optional
 
 import click
-
-# ── Ensure src/ is on path so `from ralphloop import ...` resolves ────────────
-# Mirror legacy nexus.py: `sys.path.insert(0, str(Path(__file__).parent / "src"))`
-# parents[2] = nexus-cc/src/  →  nexus-cc/src/  →  nexus-cc/
-_SRC = Path(__file__).resolve().parents[2]
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
 
 from .commands import run, tui, session, mcp, skills, cost
 from .memory import memory
