@@ -38,6 +38,7 @@ dev = [
     "ruff>=0.1",
     "mypy>=1.0",
 ]
+embeddings = ["sentence-transformers>=2.0"]
 
 [project.scripts]
 # NOTE: `nexus` command requires: pip install -e .

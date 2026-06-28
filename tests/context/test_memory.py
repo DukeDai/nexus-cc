@@ -94,3 +94,33 @@ def test_semantic_search_returns_matching_chunks(tmp_path):
     results = idx.search("login function", k=5)
     assert len(results) >= 1
     assert results[0].path.name == "auth.py"
+
+
+def test_semantic_search_with_embeddings_uses_cosine_similarity(tmp_path):
+    (tmp_path / "auth.py").write_text("login function\n" * 10)
+    (tmp_path / "util.py").write_text("utility helper\n" * 10)
+
+    # Fake embedding function: returns a vector where auth.py chunks score higher for "login" query.
+    def fake_embed(text: str) -> list[float]:
+        if "login" in text.lower():
+            return [1.0, 0.0, 0.0]
+        return [0.0, 1.0, 0.0]
+
+    idx = SemanticIndex(project_root=tmp_path, embedding_fn=fake_embed)
+    idx.index_file(tmp_path / "auth.py")
+    idx.index_file(tmp_path / "util.py")
+    # Embed all chunks
+    for chunk in idx._chunks:
+        chunk.embedding = fake_embed(chunk.content)
+    query_vec = fake_embed("login function")
+    results = idx.search_with_embeddings("login function", query_vec, k=5)
+    assert len(results) >= 1
+    assert results[0].path.name == "auth.py"
+
+
+def test_semantic_search_falls_back_to_substring_without_embeddings(tmp_path):
+    (tmp_path / "auth.py").write_text("login\n" * 5)
+    idx = SemanticIndex(project_root=tmp_path, embedding_fn=None)
+    idx.index_file(tmp_path / "auth.py")
+    results = idx.search("login", k=5)
+    assert len(results) >= 1

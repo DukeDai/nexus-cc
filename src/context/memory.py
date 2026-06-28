@@ -190,6 +190,32 @@ class SemanticIndex:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [chunk for _, chunk in scored[:k]]
 
+    def search_with_embeddings(
+        self, query: str, query_vec: list[float], k: int = 5
+    ) -> list[SemanticEntry]:
+        """Cosine similarity search. Caller computes query_vec via embedding_fn."""
+        if not self._chunks or not self._embed:
+            return self.search(query, k)
+        scored = []
+        for chunk in self._chunks:
+            if chunk.embedding is None:
+                continue
+            sim = self._cosine_similarity(query_vec, chunk.embedding)
+            scored.append((sim, chunk))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [chunk for _, chunk in scored[:k]]
+
+    @staticmethod
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+        if len(a) != len(b) or not a:
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(x * x for x in b) ** 0.5
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
 
 class SkillIndex:
     """Wraps existing src/skills/loader.py."""
