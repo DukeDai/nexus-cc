@@ -18,6 +18,7 @@ from .events import (
     ToolCallStarted,
 )
 from .plan import OnFailure, Plan, PlanStep, PlanStepKind
+from src.agents.registry import RoleRegistry  # noqa: F401 - type hints only
 
 
 MAX_RETRIES_PER_STEP = 2
@@ -48,17 +49,21 @@ class PlanWalker:
     def __init__(
         self,
         *,
+        plan: Plan,
         channel: ControlChannel,
         tools: Any,
         verification: Any = None,
         llm: Any = None,
         wal: Any = None,
+        role_registry: RoleRegistry | None = None,
     ) -> None:
+        self.plan = plan
         self._channel = channel
         self._tools = tools
         self._verification = verification
         self._llm = llm
         self._wal = wal
+        self.role_registry = role_registry
 
     async def walk(self, plan: Plan) -> list[StepResult]:
         """Iterate plan.steps[], executing each and emitting events."""
@@ -127,6 +132,8 @@ class PlanWalker:
 
     async def _execute_step_once(self, step: PlanStep) -> StepResult:
         """Dispatch to the appropriate step-type handler."""
+        if step.kind == PlanStepKind.SUBPLAN:
+            return await self._execute_subplan(step)
         if step.kind == PlanStepKind.TOOL:
             return await self._execute_tool_step(step)
         elif step.kind == PlanStepKind.VERIFY:
@@ -238,3 +245,63 @@ class PlanWalker:
                         raise PlanAborted(f"step {step.id} aborted by user")
         # Default fallback
         return StepResult(step_id=step.id, status="skipped", error=str(error))
+
+    async def _execute_subplan(self, step: PlanStep) -> StepResult:
+        """Execute a SUBPLAN step by spawning a child Plan via the role registry.
+
+        Args:
+            step: The PlanStep with kind=SUBPLAN, role set, tool=task description.
+
+        Returns:
+            StepResult with status="completed" if sub-plan succeeded,
+            status="failed" if sub-plan aborted (caught here so the parent's
+            on_failure strategy applies).
+
+        Raises:
+            RuntimeError: If role_registry was not configured on this walker.
+        """
+        if self.role_registry is None:
+            raise RuntimeError("RoleRegistry not configured on PlanWalker")
+        if step.role is None:
+            raise ValueError(f"SUBPLAN step {step.id} has no role")
+
+        sub_plan: Plan | None = None
+        try:
+            sub_plan = self.role_registry.spawn(
+                role=step.role,
+                task=step.tool,
+                context=step.subplan_args or {},
+            )
+            sub_result = await self._runtime_for_subplan().walk(sub_plan)
+            return StepResult(
+                step_id=step.id,
+                status=sub_result.status,
+                metadata={
+                    "subplan_id": sub_plan.plan_id,
+                    "subplan_result": {"status": sub_result.status},
+                    "subplan_aborted": False,
+                },
+            )
+        except PlanAborted as e:
+            return StepResult(
+                step_id=step.id,
+                status="failed",
+                error=str(e),
+                metadata={
+                    "subplan_id": sub_plan.plan_id if sub_plan else "unknown",
+                    "subplan_aborted": True,
+                },
+            )
+
+    def _runtime_for_subplan(self) -> "AgentRuntime":
+        """Return the runtime handle for sub-plan walks.
+
+        The runtime reference is set by AgentRuntime before invoking walk().
+        """
+        if not hasattr(self, "_runtime") or self._runtime is None:
+            raise RuntimeError(
+                "PlanWalker._runtime is not set; AgentRuntime must call "
+                "walker._runtime = self before walking sub-plans."
+            )
+        return self._runtime
+
