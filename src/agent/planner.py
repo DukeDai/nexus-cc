@@ -70,7 +70,13 @@ class Planner:
         self._llm = llm
         self._max_retries = max_retries
 
-    async def plan(self, task: str, *, spec: str | None = None) -> Plan:
+    async def plan(
+        self,
+        task: str,
+        *,
+        spec: str | None = None,
+        memory_context: str = "",
+    ) -> Plan:
         user_msg = f"Task: {task}"
         if spec:
             user_msg += f"\n\nAdditional spec:\n{spec}"
@@ -79,8 +85,9 @@ class Planner:
             extra = ""
             if attempt > 0 and last_error:
                 extra = f"\n\nPrevious attempt failed: {last_error}\nReturn ONLY valid JSON matching the schema."
+            full_system = "\n\n".join(filter(None, [memory_context, SYSTEM_PROMPT]))
             response = await self._llm.complete(
-                system=SYSTEM_PROMPT,
+                system=full_system,
                 messages=[{"role": "user", "content": user_msg + extra}],
             )
             text = response.content[0].text

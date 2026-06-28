@@ -24,6 +24,7 @@ class AgentRuntime:
         wal: Any,
         channel: ControlChannel,
         role_registry: "RoleRegistry | None" = None,
+        memory_store: Any = None,
     ) -> None:
         self._llm = llm
         self._tools = tools
@@ -32,6 +33,7 @@ class AgentRuntime:
         self._channel = channel
         self.role_registry = role_registry
         self._plan: Plan | None = None
+        self._memory_store = memory_store
         self._planner = Planner(llm=llm) if llm is not None else None
         self._walker = PlanWalker(
             channel=channel,
@@ -45,7 +47,10 @@ class AgentRuntime:
     async def plan(self, task: str, *, spec: str | None = None) -> Plan:
         if self._planner is None:
             raise RuntimeError("Planner requires LLM client")
-        plan = await self._planner.plan(task, spec=spec)
+        memory_context = ""
+        if self._memory_store is not None:
+            memory_context = self._memory_store.planner_context(task, k=5)
+        plan = await self._planner.plan(task, spec=spec, memory_context=memory_context)
         self._plan = plan
         return plan
 
