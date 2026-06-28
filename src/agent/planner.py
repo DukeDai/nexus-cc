@@ -29,10 +29,21 @@ Output ONLY a JSON object with this schema:
   ]
 }
 
+Available tool names (use exactly one of these — never invent names):
+- Read (read files)
+- Write (create/overwrite files)
+- Edit (in-place file edits)
+- Bash (run shell commands, e.g. pytest)
+- Glob (find files by pattern)
+- Grep (search file contents)
+- Git (git operations)
+- WebSearch (web search)
+
 Constraints:
 - 2-10 steps total
 - Prefer TOOL steps; VERIFY for test/lint gates; ASK_USER only when truly ambiguous
 - Each step must have concrete success_criteria
+- For TOOL steps, "tool" must be one of the names above, with case preserved
 """
 
 
