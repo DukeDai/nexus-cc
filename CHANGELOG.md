@@ -10,7 +10,7 @@
 - Retry-with-feedback: `on_failure="retry_with_feedback"` feeds verifier errors back to LLM
 - WAL v2 format with `format_version` header + `metadata` blocks; v1.0 WAL files still load
 - New CLI commands: `nexus session migrate`, `nexus role`, `nexus memory`, `nexus skill`, `nexus prompt`, `nexus evolve`
-- New TUI panels: VerifierPanel, MemoryPanel
+- New TUI panels: VerifierPanel, MemoryPanel, ExecutionPanel
 - New TUI modals: SkillPickerModal, EvolveApprovalModal, PromptHistoryViewerModal
 - New TUI keybindings: V (verifier), M (memory), s (skill), E (evolve), Ctrl-r (re-run verifier)
 
