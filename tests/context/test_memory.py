@@ -1,6 +1,7 @@
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
-from src.context.memory import MemoryStore, EpisodicEntry, EpisodicIndex, SemanticEntry, SemanticIndex
+from src.context.memory import MemoryStore, EpisodicEntry, EpisodicIndex, SemanticEntry, SemanticIndex, SkillIndex
 
 
 def test_memory_store_constructs_with_empty_indexes():
@@ -124,3 +125,23 @@ def test_semantic_search_falls_back_to_substring_without_embeddings(tmp_path):
     idx.index_file(tmp_path / "auth.py")
     results = idx.search("login", k=5)
     assert len(results) >= 1
+
+
+def test_skill_index_suggest_returns_matches():
+    class FakeLoader:
+        def search(self, query: str) -> list[Any]:
+            return [{"name": "pytest_helper", "match_score": 0.9}]
+
+    idx = SkillIndex(skill_loader=FakeLoader())
+    suggestions = idx.suggest("add pytest fixture", plan=MagicMock())
+    assert len(suggestions) == 1
+    assert suggestions[0]["name"] == "pytest_helper"
+
+
+def test_skill_index_apply_attaches_skill_to_step():
+    idx = SkillIndex(skill_loader=MagicMock())
+    skill = {"name": "pytest_helper", "template": "run pytest {path}"}
+    step = MagicMock()
+    result = idx.apply(skill, step)
+    assert result is step
+    step.attach_skill.assert_called_once_with(skill)

@@ -224,11 +224,18 @@ class SkillIndex:
         self._loader = skill_loader
 
     def suggest(self, task: str, plan: Any) -> list[Any]:
-        # Filled in Task 15.
-        return []
+        """Suggest skills for the given task. Returns list of skill dicts."""
+        if self._loader is None:
+            return []
+        return self._loader.search(task)
 
     def apply(self, skill: Any, step: Any) -> Any:
-        # Filled in Task 15.
+        """Attach skill metadata to step. Returns the (possibly modified) step."""
+        if hasattr(step, "attach_skill"):
+            step.attach_skill(skill)
+        else:
+            step.metadata = getattr(step, "metadata", {}) or {}
+            step.metadata["skill"] = skill
         return step
 
 
