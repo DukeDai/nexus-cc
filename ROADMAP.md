@@ -62,27 +62,31 @@ Released. Full plan in `docs/superpowers/plans/2026-06-27-nexus-plan-first-redes
 
 ---
 
-## v2 — Q4 2026 — Self-Evolution Return (moved to Future)
-
-> Note: Self-evolution shipped in v1.1; v2 scope updated below.
+## v1.2 — Q4 2026 — Deferred Tooling & Routing
 
 **Goals:**
-- Reintroduce `SelfEvolutionEngine` to learn from WAL error patterns.
-- Skill library: error → pattern → reusable prompt template.
-- A/B test framework for prompt variations.
+- **Real WebSearch tool**: replace v1.0 stub with live search backend (e.g., Anthropic WebSearch API or pluggable provider).
+- **Model Router**: cost-aware LLM selection — choose model per step based on task complexity, budget, and historical success rates.
+- **MCP Server Mode**: expose Nexus as an MCP server so external clients (e.g., Claude Desktop, other agents) can invoke `nexus run` and reuse the plan-first runtime.
 
-**Cuts from v1:** none expected.
+**Note:** Design specs are still TODO. Once drafted, place under `docs/superpowers/specs/2026-06-28-nexus-v12-*.md`.
+
+**Cuts from v1.1:** none expected — v1.2 is additive (new tool impl, new router module, new MCP transport).
 
 ---
 
-## v3 — 2027 — Multi-Agent Speculation
+## v2 — Q1 2027 — Deepening Self-Evolution
+
+> **Note:** v1.1 shipped **foundational** self-evolution — `Evolver` + `PromptTemplateRegistry` with user-approval gate, plus three-layer memory (EpisodicIndex, SemanticIndex, SkillIndex). v2 builds on that foundation rather than reintroducing it.
 
 **Goals:**
-- Reintroduce `SelfEvolutionEngine` to learn from WAL error patterns.
-- Skill library: error → pattern → reusable prompt template.
-- A/B test framework for prompt variations.
+- **A/B test framework for prompt variations**: split traffic between prompt variants per role, measure outcomes via WAL-derived success metrics, promote winners automatically.
+- **Error-pattern skill library**: automatically mine WAL error patterns → cluster → generate reusable prompt templates (closes the loop from detection to remediation).
+- **Skill promotion pipeline**: skill graduates from SkillIndex → PromptTemplateRegistry once it meets a confidence threshold (e.g., used successfully N times).
 
-**Cuts from v1:** none expected.
+**Deferred from v1.1 open questions:** now closed via the foundational work above.
+
+**Cuts from v1.1:** none expected.
 
 ---
 
@@ -107,6 +111,9 @@ Released. Full plan in `docs/superpowers/plans/2026-06-27-nexus-plan-first-redes
 | 2026-06-27 | Drop subagents/TDD/SelfEvo from v1 | Focus on core plan-walk-recover loop; add complexity later |
 | 2026-06-27 | Textual TUI replaces Rich+readchar | Modern, async-native, easier to maintain than legacy Rich loop |
 | 2026-06-27 | WAL JSONL replaces SQLite | Simpler, append-only, no schema migrations |
+| 2026-06-28 | v1.1 ships sub-plans + MCP + memory + foundational self-evolution | SUBPLAN + RoleRegistry unlocks multi-agent plans; three-layer memory + Evolver enable learning without re-architecting runtime |
+| 2026-06-28 | v1.2 plan: WebSearch + Model Router + MCP server mode | Real WebSearch unblocks live research; Model Router controls cost as plans grow; MCP server mode lets external clients reuse Nexus runtime |
+| 2026-06-28 | v2 reframed: deepening self-evolution (not reintroduction) | v1.1 shipped Evolver + PromptTemplateRegistry; v2 focuses on A/B testing + auto-mined skill library on top of that foundation |
 
 ---
 
