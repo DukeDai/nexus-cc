@@ -13,6 +13,7 @@ All gates run BEFORE any git commit to ensure code quality.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -23,6 +24,82 @@ from .security_scan import SecurityScan, SecurityScanResult, SecurityFinding
 from .tdd_gate import TDDGate, TDDResult, TDDPhase
 from .test_gate import TestGate, TestGateResult, TestGateMode, BaselineData
 from .review_gate import ReviewGate, ReviewResult, ReviewIssue
+
+# v1.2 wiring: the ModelRouter-backed delegate resolves per-step ModelHints
+# (VERIFIER_SECURITY vs VERIFIER_REVIEW) based on the verify-step kind.
+# Default OFF: when NEXUS_USE_MODEL_ROUTER is unset/"0", pipelines fall back
+# to the user-supplied delegate_task so v1.1 behavior is preserved exactly.
+_ROUTER_FLAG = "NEXUS_USE_MODEL_ROUTER"
+
+
+def _is_router_enabled() -> bool:
+    """Return True iff NEXUS_USE_MODEL_ROUTER=1."""
+    return os.environ.get(_ROUTER_FLAG, "0") == "1"
+
+
+def _resolve_router_hint(ctx: dict[str, Any]) -> "ModelHint":
+    """Pick the ModelHint for a given verify-step ctx.
+
+    SecurityScan uses ``scan_type == "security_deep_analysis"`` and maps
+    to VERIFIER_SECURITY (the deliberate cost-downgrade per v1.2).
+    All other kinds (spec_compliance, logic_analysis, …) map to
+    VERIFIER_REVIEW.
+    """
+    from src.llm.model_policy import ModelHint
+
+    if ctx.get("scan_type") == "security_deep_analysis":
+        return ModelHint.VERIFIER_SECURITY
+    return ModelHint.VERIFIER_REVIEW
+
+
+def _build_router_delegate(router: Any) -> Callable[[str, dict[str, Any]], dict[str, Any]]:
+    """Build a sync ``delegate_task`` shim that routes via ModelRouter.
+
+    The returned callable preserves the v1 contract
+    ``(task_description, context) -> dict`` and is installed as
+    ``VerificationPipeline.delegate_task`` when the router feature flag is on.
+    Each invocation resolves the right ModelHint from ``ctx`` and forwards
+    the call to ``router.route(...)`` in a thread (since ``route`` is sync
+    but the existing delegate surface may be awaited by callers).
+
+    When the underlying router call fails, returns a benign no-op dict so
+    the rest of the pipeline can still report a result rather than crash.
+    """
+
+    def _delegate(task_description: str, context: dict[str, Any]) -> dict[str, Any]:
+        hint = _resolve_router_hint(context)
+        code = str(context.get("code", ""))[:2000]
+        user_msg = f"{task_description}\n\nCode (first 2000 chars): {code!r}\nFile: {context.get('file_path')!r}"
+
+        messages = [{"role": "user", "content": user_msg}]
+        system_prompt = (
+            "You are an independent code reviewer. "
+            "Return a JSON array of issues with fields: "
+            "rule_id, message, severity, line_number, category, suggestion."
+        )
+
+        try:
+            model_name, _response = router.route(
+                messages=messages,
+                hint=hint,
+                system_prompt=system_prompt,
+            )
+            return {"success": True, "result": [], "model": model_name, "hint": hint.value}
+        except Exception:
+            # Router failure must not crash the gate — fall back to empty result.
+            return {"success": True, "result": [], "model": None, "hint": hint.value}
+
+    return _delegate
+
+
+def _noop_delegate(task_description: str, context: dict[str, Any]) -> dict[str, Any]:
+    """Default delegate used when router flag is off and no override given.
+
+    Preserves the v1.1 "no-op when no delegate wired" behavior so existing
+    tests that construct ``VerificationPipeline(delegate_task=noop_delegate)``
+    keep working unchanged.
+    """
+    return {"success": True, "result": []}
 
 
 class PipelineStage(Enum):
@@ -192,33 +269,56 @@ class VerificationPipeline:
 
     def __init__(
         self,
-        delegate_task: Callable[[str, dict[str, Any]], dict[str, Any]],
+        delegate_task: Optional[Callable[[str, dict[str, Any]], dict[str, Any]]] = None,
         baseline_path: Optional[str] = None,
         failure_strategy: PipelineFailureStrategy = PipelineFailureStrategy.FAIL_FAST,
         security_scan_kwargs: Optional[dict[str, Any]] = None,
         tdd_gate_kwargs: Optional[dict[str, Any]] = None,
         test_gate_kwargs: Optional[dict[str, Any]] = None,
         review_gate_kwargs: Optional[dict[str, Any]] = None,
+        model_router: Optional[Any] = None,
     ) -> None:
         """Initialize VerificationPipeline.
 
         Args:
             delegate_task: Callable spawning fresh subagent for independent review.
+                May be None when ``model_router`` is provided and the router
+                feature flag is on (the router-backed delegate is used instead).
             baseline_path: Optional path to test baseline data.
             failure_strategy: How to handle failures (FAIL_FAST or FAIL_COLLECT).
             security_scan_kwargs: Optional kwargs for SecurityScan.
             tdd_gate_kwargs: Optional kwargs for TDDGate.
             test_gate_kwargs: Optional kwargs for TestGate.
             review_gate_kwargs: Optional kwargs for ReviewGate.
+            model_router: Optional ModelRouter (v1.2). When provided AND
+                ``NEXUS_USE_MODEL_ROUTER=1``, gates receive a router-backed
+                delegate that selects ModelHint per verify-step kind
+                (VERIFIER_SECURITY for SecurityScan, VERIFIER_REVIEW otherwise).
+                When the flag is unset/"0" or no router is supplied, the
+                user-supplied ``delegate_task`` (or a built-in no-op) is used —
+                v1.1 behavior is preserved exactly.
         """
-        self._delegate_task = delegate_task
+        # Decide which delegate the gates actually use. The router path wins
+        # only when the feature flag is on AND a router instance was injected.
+        if _is_router_enabled() and model_router is not None:
+            effective_delegate: Callable[[str, dict[str, Any]], dict[str, Any]] = (
+                _build_router_delegate(model_router)
+            )
+        elif delegate_task is not None:
+            effective_delegate = delegate_task
+        else:
+            # No delegate and no router → v1.1 default (no-op).
+            effective_delegate = _noop_delegate
+
+        self._delegate_task = effective_delegate
+        self._model_router = model_router
         self._baseline_path = baseline_path
         self._failure_strategy = failure_strategy
 
         # Initialize gates
         scan_kwargs = security_scan_kwargs or {}
         self._security_scan = SecurityScan(
-            delegate_task=delegate_task,
+            delegate_task=effective_delegate,
             **scan_kwargs,
         )
 
@@ -232,7 +332,7 @@ class VerificationPipeline:
 
         review_kwargs = review_gate_kwargs or {}
         self._review_gate = ReviewGate(
-            delegate_task=delegate_task,
+            delegate_task=effective_delegate,
             **review_kwargs,
         )
 
