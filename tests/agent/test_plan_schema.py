@@ -33,3 +33,29 @@ def test_plan_step_role_optional_for_non_subplan_kinds():
     )
     assert step.role is None
     assert step.subplan_args is None
+
+
+def test_plan_step_has_pipeline_and_pipeline_args():
+    step = PlanStep(
+        id="step-3",
+        kind=PlanStepKind.VERIFY,
+        intent="run security scan",
+        tool=None,
+        pipeline="security",
+        pipeline_args={"scope": "src/auth/"},
+        success_criteria="no HIGH findings",
+    )
+    assert step.pipeline == "security"
+    assert step.pipeline_args == {"scope": "src/auth/"}
+
+
+def test_plan_step_pipeline_optional_for_verify_kind():
+    step = PlanStep(
+        id="step-4",
+        kind=PlanStepKind.VERIFY,
+        intent="check code quality",
+        tool=None,
+        success_criteria="looks good",
+    )
+    assert step.pipeline is None
+    assert step.pipeline_args is None
