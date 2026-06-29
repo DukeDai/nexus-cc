@@ -16,7 +16,68 @@ from ..agent.events import (
     StepStarted,
     WalkEvent,
 )
+from ..llm.model_policy import DEFAULT_POLICY, ModelHint, ModelPolicy
 from .step_edit_modal import StepEditModal
+
+
+# --- v1.2 model-badge helpers -------------------------------------------------
+
+# Map step.kind → ModelHint. SUBPLAN inherits the role's effective model via
+# the policy's per_role lookup; ASK_USER doesn't invoke a model.
+_STEP_KIND_TO_HINT: dict[PlanStepKind, ModelHint | None] = {
+    PlanStepKind.TOOL: ModelHint.PLANNER,
+    PlanStepKind.VERIFY: ModelHint.VERIFIER_REVIEW,
+    PlanStepKind.CRITIQUE: ModelHint.CRITIQUE,
+    PlanStepKind.SUBPLAN: None,  # resolved via step.role.name
+    PlanStepKind.ASK_USER: None,  # no model call
+}
+
+
+def _short_model_tag(model: str) -> str:
+    """Map a full model name to a short badge string.
+
+    Examples:
+        'claude-sonnet-4-6' -> 'Sonnet'
+        'claude-haiku-4-5'  -> 'Haiku'
+        'claude-opus-4-8'   -> 'Opus'
+        anything else       -> the basename after the last '-'
+    """
+    name = (model or "").lower()
+    if "sonnet" in name:
+        return "Sonnet"
+    if "haiku" in name:
+        return "Haiku"
+    if "opus" in name:
+        return "Opus"
+    # Fallback: last hyphen-separated token (e.g. "gpt-4o-mini" -> "mini").
+    return model.split("-")[-1] if model else "?"
+
+
+def _resolve_step_model(step: PlanStep, policy: ModelPolicy | None) -> str | None:
+    """Resolve the model name that will be used to execute ``step``.
+
+    Returns ``None`` when the step doesn't trigger an LLM call (e.g.
+    ASK_USER) or when no policy is attached.
+
+    Precedence (mirrors ModelPolicy.resolve + step.role override):
+        1. step.role.name → policy.per_role[role]  (if SUBPLAN and role set)
+        2. step.kind → ModelHint → policy.resolve(hint)
+
+    Args:
+        step:   The PlanStep to resolve a model for.
+        policy: Active ModelPolicy, or None to skip the badge.
+    """
+    # TODO: implement the resolution logic described above.
+    # - For SUBPLAN steps with a role, look up the role name in
+    #   policy.per_role first; if absent, fall back to the role's
+    #   tier-derived name from DEFAULT_POLICY[ModelHint.PLANNER].
+    # - For other step kinds, map step.kind via _STEP_KIND_TO_HINT and
+    #   call policy.resolve(hint) (or DEFAULT_POLICY[hint] if no policy).
+    # - Return None for ASK_USER or when no model can be resolved.
+    raise NotImplementedError("TODO: implement step → model resolution")
+
+
+# -----------------------------------------------------------------------------
 
 
 class PlanPanel(Container):
@@ -65,10 +126,18 @@ class PlanPanel(Container):
         """Public alias for tests / external callers (mirrors plan naming)."""
         return self.plan_tree
 
-    def __init__(self, *, channel: ControlChannel, plan: Plan | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        *,
+        channel: ControlChannel,
+        plan: Plan | None = None,
+        policy: ModelPolicy | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self.channel = channel
         self.plan: Plan | None = plan
+        self.policy = policy
         self.plan_tree: Tree = Tree("Plan")
 
     def compose(self):
@@ -102,12 +171,51 @@ class PlanPanel(Container):
         """Reset the tree and add one leaf per step."""
         self.plan_tree.reset(plan.spec or "Plan")
         for step in plan.steps:
-            self.plan_tree.root.add_leaf(self._step_label(step), data={"step_id": step.id})
+            self.plan_tree.root.add_leaf(
+                self._step_label(step), data={"step_id": step.id}
+            )
 
     def _step_label(self, step, marker: str = " ") -> str:
-        """Format a step's display label."""
+        """Format a step's display label with an optional model badge.
+
+        Format: "{marker} {kind}: {intent}  [model]" when a model is
+        resolvable, else the bare label.
+        """
         intent = (step.intent or "")[:50]
-        return f"{marker} {step.kind.value}: {intent}"
+        base = f"{marker} {step.kind.value}: {intent}"
+        try:
+            model = _resolve_step_model(step, self.policy)
+        except NotImplementedError:
+            model = None
+        except Exception:
+            model = None
+        if model is None:
+            return base
+        return f"{base}  [{_short_model_tag(model)}]"
+
+    def _mark_step(self, step_id: str, marker: str) -> None:
+        """Find the node with the given step_id and prepend the marker."""
+        for node in self.plan_tree.root.children:
+            data = node.data or {}
+            if data.get("step_id") == step_id:
+                # Re-derive the label without the leading marker character.
+                old = str(node.label)
+                stripped = old.lstrip()
+                # The original label was "{marker} {kind}: {intent}" where
+                # marker was " " or one of ▶/✓/✗. Strip the first character
+                # and re-prefix with the new marker.
+                if len(stripped) > 1 and stripped[0] in (" ", "▶", "✓", "✗"):
+                    rest = stripped[1:].lstrip()
+                else:
+                    rest = stripped
+                # Preserve the trailing [model] badge if present.
+                badge = ""
+                if "[" in rest and rest.endswith("]"):
+                    bracket = rest.rfind("[")
+                    badge = " " + rest[bracket:]
+                    rest = rest[:bracket].rstrip()
+                node.set_label(f"{marker} {rest}{badge}")
+                return
 
     # ------------------------------------------------------------------ subplan
 

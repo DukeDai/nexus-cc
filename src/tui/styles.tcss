@@ -3,3 +3,6 @@ Screen { layout: vertical; }
 #right-pane { width: 60%; }
 #execution-pane { height: 50%; border: solid blue; }
 #tool-output-pane { height: 50%; border: solid yellow; }
+#verifier-panel { height: 3; border: solid magenta; padding: 0 1; }
+#memory-panel { height: 3; border: solid cyan; padding: 0 1; }
+#cost-panel { height: 7; border: solid green; padding: 0 1; }

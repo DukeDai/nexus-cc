@@ -17,11 +17,15 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Header, Footer
 
 from ..agent.control import Command, CommandKind, ControlChannel
-from ..agent.events import PlanStarted, WalkEvent
+from ..agent.events import PlanStarted, StepCompleted, WalkEvent
 from ..agent.plan import Plan, PlanStep, PlanStepKind, OnFailure
+from ..llm.cost_tracker import CostTracker
+from ..llm.model_policy import ModelPolicy
+from .cost_panel import CostPanel
 from .evolve_approval_modal import EvolveApprovalModal
 from .execution_panel import ExecutionPanel
 from .memory_panel import MemoryPanel
+from .model_mapping_modal import ModelMappingModal
 from .new_task_modal import NewTaskModal
 from .plan_panel import PlanPanel
 from .recover_modal import RecoverModal
@@ -45,16 +49,29 @@ class NexusApp(App):
         ("n", "new_task", "New task"),
         ("V", "focus_verifier", "Verifier"),
         ("M", "focus_memory", "Memory"),
+        ("shift+m", "model_mapping", "Model map"),
         ("s", "skill_picker", "Skill"),
         ("E", "evolve_approval", "Evolve"),
         ("ctrl+r", "rerun_verifier", "Re-run verifier"),
     ]
 
-    def __init__(self, *, channel: ControlChannel, runtime=None, wal=None) -> None:
+    def __init__(
+        self,
+        *,
+        channel: ControlChannel,
+        runtime=None,
+        wal=None,
+        cost_tracker: CostTracker | None = None,
+        policy: ModelPolicy | None = None,
+        project_root=None,
+    ) -> None:
         super().__init__()
         self.channel = channel
         self.runtime = runtime
         self._wal = wal
+        self._cost_tracker = cost_tracker
+        self._policy = policy
+        self._project_root = project_root
         self._walk_task: asyncio.Task | None = None
         self._current_plan: Plan | None = None
 
@@ -69,12 +86,13 @@ class NexusApp(App):
     def compose(self):
         yield Header()
         with Horizontal():
-            yield PlanPanel(channel=self.channel, id="plan-pane")
+            yield PlanPanel(channel=self.channel, policy=self._policy, id="plan-pane")
             with Vertical(id="right-pane"):
                 yield ExecutionPanel(channel=self.channel, id="execution-pane")
                 yield ToolOutputPanel(channel=self.channel, id="tool-output-pane")
         yield VerifierPanel(id="verifier-panel")
         yield MemoryPanel(id="memory-panel")
+        yield CostPanel(cost_tracker=self._cost_tracker, id="cost-panel")
         yield Footer()
 
     # ------------------------------------------------------------ on_mount
@@ -84,9 +102,20 @@ class NexusApp(App):
         self.set_interval(0.05, self._dispatch_events)
         # Single drainer for commands; forwards to runtime mutators.
         self.set_interval(0.05, self._drain_commands)
+        # Refresh the CostPanel after every step completion so totals stay live.
+        if self._cost_tracker is not None:
+            self.subscribe_event(StepCompleted, self._on_step_completed)
         # Defer the WAL recovery check until after compose() finishes so
         # the modal can mount correctly on top of the regular screen.
         self.call_after_refresh(self._maybe_offer_recovery)
+
+    def _on_step_completed(self, _event) -> None:
+        """Refresh the CostPanel after each completed step."""
+        try:
+            panel = self.query_one("#cost-panel", CostPanel)
+            panel.update_costs()
+        except Exception:
+            pass
 
     async def _maybe_offer_recovery(self) -> None:
         """If WAL has an unfinished plan, push RecoverModal.
@@ -322,6 +351,30 @@ class NexusApp(App):
         from pathlib import Path
         staged = Path(self.workdir) / ".nexus" / "prompts" / "staged.json"
         self.push_screen(EvolveApprovalModal(staged))
+
+    def action_model_mapping(self) -> None:
+        """Open the ModelMappingModal (Shift+M)."""
+        if self._policy is None or self._project_root is None:
+            self.notify("Model policy not wired into this session.")
+            return
+
+        def _on_save(new_policy: ModelPolicy | None) -> None:
+            if new_policy is None:
+                return
+            self._policy = new_policy
+            # Push the new policy into the runtime so subsequent LLM calls
+            # honor it. Fall back silently if the runtime has no such hook.
+            runtime = self.runtime
+            if runtime is not None and hasattr(runtime, "set_policy"):
+                try:
+                    runtime.set_policy(new_policy)
+                except Exception:
+                    pass
+
+        self.push_screen(
+            ModelMappingModal(policy=self._policy, project_root=self._project_root),
+            callback=_on_save,
+        )
 
     def action_rerun_verifier(self) -> None:
         self.notify("Re-run verifier: not yet wired to active step")
