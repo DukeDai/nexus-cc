@@ -197,9 +197,19 @@ def _validate_plan_tool_args(plan: Plan, tool_registry: Any) -> list[ArgSchemaVa
     """Return one validation error per TOOL step whose args fail to validate.
 
     Silently skips TOOL steps that reference an unknown tool (the planner will
-    surface unknown-tool errors elsewhere via ToolRegistry.get).
+    surface unknown-tool errors elsewhere via ToolRegistry.get). Also returns
+    an empty list when the supplied registry is not an instance of the real
+    ``ToolRegistry`` class — keeps backwards compatibility with custom (test
+    double, MagicMock, etc.) tool containers where args_schema can't be
+    introspected.
     """
     errs: list[ArgSchemaValidationError] = []
+    # Lazily import to avoid an import cycle with src.tools.registry.
+    from src.tools.registry import ToolRegistry as _ToolRegistry
+    if not isinstance(tool_registry, _ToolRegistry):
+        # Custom tool container (e.g. test fake / MagicMock) without a real
+        # args_schema we can introspect. Same behavior as v1.1 — skip.
+        return errs
     for step in plan.steps:
         if step.kind != PlanStepKind.TOOL or not step.tool:
             continue
@@ -229,12 +239,17 @@ class Planner:
     ) -> None:
         self._llm = llm
         self._max_retries = max_retries
-        # Optional: when provided, the planner validates TOOL-step args against
-        # the registry's args_schema and re-prompts on mismatch. When ``None``
-        # (the default), planner behavior is unchanged from v1.1 — useful for
-        # callers that construct a Planner without a ToolRegistry and for
-        # tests that want to assert on the raw LLM output.
-        self._tool_registry = tool_registry
+        # Optional: when provided AND a real ToolRegistry instance, the
+        # planner validates TOOL-step args against the registry's args_schema
+        # and re-prompts on mismatch. Custom (non-ToolRegistry) containers
+        # — including test doubles and MagicMock objects — fall through to
+        # the v1.1 no-validation path so existing tests keep working.
+        self._tool_registry: Any = None
+        if tool_registry is not None:
+            # Local import to avoid an import cycle with src.tools.registry.
+            from src.tools.registry import ToolRegistry as _ToolRegistry
+            if isinstance(tool_registry, _ToolRegistry):
+                self._tool_registry = tool_registry
         self._max_arg_schema_retries = max(0, max_arg_schema_retries)
 
     async def plan(

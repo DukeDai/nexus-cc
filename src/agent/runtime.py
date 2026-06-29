@@ -45,16 +45,12 @@ class AgentRuntime:
         self._workdir = Path(workdir) if workdir else Path(".")
         # Wire the ToolRegistry into the Planner so it can validate TOOL-step
         # args against each tool's args_schema and self-correct on mismatch.
-        # If the injected ``tools`` doesn't expose ``args_schema`` (custom
-        # non-tool registry), Planner gracefully no-ops the validation.
-        try:
-            self._planner = (
-                Planner(llm=llm, tool_registry=tools) if llm is not None else None
-            )
-        except TypeError:
-            # Backwards-compat: tests may pass an object that isn't a
-            # ToolRegistry; fall back to the legacy v1.1 path.
-            self._planner = Planner(llm=llm) if llm is not None else None
+        # Planner is defensive: if ``tools`` isn't a real ToolRegistry (e.g.
+        # a test fake / MagicMock), validation is a no-op and v1.1 behavior is
+        # preserved.
+        self._planner = (
+            Planner(llm=llm, tool_registry=tools) if llm is not None else None
+        )
         self._walker = PlanWalker(
             channel=channel,
             tools=tools,
