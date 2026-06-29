@@ -65,24 +65,59 @@ def _resolve_step_model(step: PlanStep, policy: ModelPolicy | None) -> str | Non
     """Resolve the model name that will be used to execute ``step``.
 
     Returns ``None`` when the step doesn't trigger an LLM call (e.g.
-    ASK_USER) or when no policy is attached.
+    ASK_USER) or when no model can be resolved.
 
-    Precedence (mirrors ModelPolicy.resolve + step.role override):
-        1. step.role.name → policy.per_role[role]  (if SUBPLAN and role set)
-        2. step.kind → ModelHint → policy.resolve(hint)
+    Resolution rules (mirror what ModelRouter.route does at runtime):
+      1. ASK_USER → no model call → return None.
+      2. VERIFY with pipeline == "security" → ModelHint.VERIFIER_SECURITY
+         (the deliberate cost-downgrade per v1.2 spec §1.2).
+      3. VERIFY (other pipelines: "tdd"/"test"/"review") → ModelHint.VERIFIER_REVIEW.
+      4. CRITIQUE → ModelHint.CRITIQUE.
+      5. TOOL → ModelHint.PLANNER.
+      6. SUBPLAN:
+         - if step.role is set, look up step.role.name in policy.per_role first
+         - otherwise (or on miss) fall through to ModelHint.PLANNER
+      7. policy.resolve(hint, role=role_name) if a policy is attached,
+         else DEFAULT_POLICY[hint]. Any ValueError from policy.resolve
+         (no model resolved) falls back to DEFAULT_POLICY so the badge
+         never silently disappears.
 
     Args:
         step:   The PlanStep to resolve a model for.
-        policy: Active ModelPolicy, or None to skip the badge.
+        policy: Active ModelPolicy, or None to skip the policy.
     """
-    # TODO: implement the resolution logic described above.
-    # - For SUBPLAN steps with a role, look up the role name in
-    #   policy.per_role first; if absent, fall back to the role's
-    #   tier-derived name from DEFAULT_POLICY[ModelHint.PLANNER].
-    # - For other step kinds, map step.kind via _STEP_KIND_TO_HINT and
-    #   call policy.resolve(hint) (or DEFAULT_POLICY[hint] if no policy).
-    # - Return None for ASK_USER or when no model can be resolved.
-    raise NotImplementedError("TODO: implement step → model resolution")
+    # 1. ASK_USER never invokes a model.
+    if step.kind == PlanStepKind.ASK_USER:
+        return None
+
+    # 6a. SUBPLAN + role → per_role lookup first (precedence over hint).
+    if step.kind == PlanStepKind.SUBPLAN and step.role is not None:
+        role_name = step.role.name
+        if policy is not None and role_name in policy.per_role:
+            return policy.per_role[role_name]
+
+    # 2–5, 6b. Pick the ModelHint for this step kind.
+    if step.kind == PlanStepKind.VERIFY:
+        # Security verification intentionally downgrades to a cheap model
+        # (v1.2 spec §1.2). Other verification pipelines (tdd/test/review)
+        # use VERIFIER_REVIEW which defaults to Sonnet 4.6.
+        hint = (
+            ModelHint.VERIFIER_SECURITY
+            if (step.pipeline == "security")
+            else ModelHint.VERIFIER_REVIEW
+        )
+    else:
+        hint = _STEP_KIND_TO_HINT.get(step.kind) or ModelHint.PLANNER
+
+    # 7. Resolve via policy; fall back to DEFAULT_POLICY on any failure so
+    # the badge never silently disappears in the TUI.
+    role_name = step.role.name if step.role is not None else None
+    if policy is not None:
+        try:
+            return policy.resolve(hint, role=role_name)
+        except ValueError:
+            pass
+    return DEFAULT_POLICY.get(hint)
 
 
 # -----------------------------------------------------------------------------
