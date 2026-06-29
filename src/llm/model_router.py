@@ -4,9 +4,13 @@ v1.2 refactor: heuristic TaskType selection is replaced by an explicit
 ModelHint → model-name policy. v1.1 callers using `select_model(TaskType.X)`
 are still supported as a thin wrapper that maps to `route(hint=ModelHint.PLANNER)`.
 
-Only Anthropic providers are exposed (OpenAI/Ollama/MiniMax_CN removed per
-v1.2 decisions; the underlying LLMClient still supports them but the router
-won't surface them).
+Supported model families:
+- Anthropic (claude-haiku-4-5, claude-sonnet-4-6, claude-opus-4-8) — first-class.
+- MiniMax via Anthropic-compatible API (MiniMax-M3, MiniMax-M2.7) — opt-in via
+  .nexus/policy.yaml; uses Provider.MINIMAX_CN which routes to the user-configured
+  ANTHROPIC_BASE_URL (or https://api.minimaxi.com/anthropic by default).
+  Pricing is a rough estimate — override per-model via the `PRICING_PER_1K_TOKENS`
+  table in cost_tracker.py if your contract differs.
 """
 
 from __future__ import annotations
@@ -58,7 +62,7 @@ class ModelRouter:
         api_keys: Optional {Provider: api_key} overrides (Anthropic key auto-pulled from env).
     """
 
-    # v1.2 surface: only Anthropic models. Updated to current model ids.
+    # v1.2 surface: Anthropic + MiniMax (Anthropic-compatible). Updated to current model ids.
     DEFAULT_MODELS: dict[str, ModelConfig] = {
         "claude-haiku-4-5": ModelConfig(
             name="claude-haiku-4-5",
@@ -89,6 +93,30 @@ class ModelRouter:
             cost_per_1k_input=0.015,
             cost_per_1k_output=0.075,
             speed_factor=0.8,
+        ),
+        # MiniMax family — Anthropic-compatible API at https://api.minimaxi.com/anthropic.
+        # Opt in by mapping hints to these names in .nexus/policy.yaml. Pricing is a
+        # rough estimate (tier-equivalent to Sonnet 4.6); override per-model in
+        # cost_tracker.PRICING_PER_1K_TOKENS if your contract differs.
+        "MiniMax-M3": ModelConfig(
+            name="MiniMax-M3",
+            provider=Provider.MINIMAX_CN,
+            context_window=200000,
+            supports_tools=True,
+            supports_vision=True,
+            cost_per_1k_input=0.003,
+            cost_per_1k_output=0.015,
+            speed_factor=1.5,
+        ),
+        "MiniMax-M2.7": ModelConfig(
+            name="MiniMax-M2.7",
+            provider=Provider.MINIMAX_CN,
+            context_window=200000,
+            supports_tools=True,
+            supports_vision=True,
+            cost_per_1k_input=0.0008,
+            cost_per_1k_output=0.004,
+            speed_factor=3.0,
         ),
     }
 
@@ -125,9 +153,20 @@ class ModelRouter:
         return client
 
     def _env_key(self) -> str:
+        """Resolve an API key from env. Order:
+        1. ANTHROPIC_API_KEY (Anthropic official)
+        2. ANTHROPIC_AUTH_TOKEN (Anthropic-style, used by MiniMax)
+        3. MINIMAX_API_KEY (MiniMax native)
+        4. empty string (caller will fail loudly on auth error)
+        """
         import os
 
-        return os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
+        return (
+            os.environ.get("ANTHROPIC_API_KEY")
+            or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+            or os.environ.get("MINIMAX_API_KEY")
+            or ""
+        )
 
     def route(
         self,

@@ -26,12 +26,17 @@ logger = logging.getLogger(__name__)
 
 Dimension = Literal["model", "hint", "role", "session"]
 
-# Rough Anthropic list prices (USD per 1K tokens). Tune later.
+# Rough list prices (USD per 1K tokens). Tune later. MiniMax pricing is
+# estimated tier-equivalent to Anthropic Sonnet 4.6 / Haiku 4.5 — override
+# here if your contract differs.
 PRICING_PER_1K_TOKENS: dict[str, tuple[float, float]] = {
     # model_name: (input_cost, output_cost)
     "claude-haiku-4-5": (0.00080, 0.00400),
     "claude-sonnet-4-6": (0.00300, 0.01500),
     "claude-opus-4-8": (0.01500, 0.07500),
+    # MiniMax family (Anthropic-compatible API) — rough estimate.
+    "MiniMax-M3": (0.00300, 0.01500),
+    "MiniMax-M2.7": (0.00080, 0.00400),
 }
 
 

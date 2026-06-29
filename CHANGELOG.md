@@ -14,7 +14,7 @@
 - `VERIFIER_SECURITY` default mapping = `claude-haiku-4-5` (the one deliberate cost-downgrade per spec §1.2). All other hints default to `claude-sonnet-4-6` (matches v1.1 behavior — backward-compatible).
 
 ### Breaking
-- **OpenAI / Ollama / MiniMax_CN providers dropped from `DEFAULT_MODELS`.** v1.2 ships Anthropic-only by default; the router registry drops OpenAI/Ollama/MiniMax_CN entries from `ModelConfig`. Users on those providers must add explicit entries to `.nexus/policy.yaml`.
+- **OpenAI / Ollama providers dropped from `DEFAULT_MODELS`.** v1.2 ships Anthropic-only by default; the router registry drops OpenAI/Ollama entries from `ModelConfig`. Users on those providers must add explicit entries to `.nexus/policy.yaml`.
 
   Migration — restore OpenAI `gpt-4o-mini` for all hints:
 
@@ -25,6 +25,8 @@
   ```
 
   Replace `gpt-4o-mini` with your preferred model; per-hint overrides also supported (e.g. `verifier_security: gpt-4o-mini`, `planner: gpt-4o`). See `docs/superpowers/specs/2026-06-28-nexus-v12-model-router-design.md` §5.
+
+  **Note (revision):** MiniMax (via the Anthropic-compatible API at `https://api.minimaxi.com/anthropic`) is re-exposed as a first-class family in `ModelRouter.DEFAULT_MODELS` (`MiniMax-M3`, `MiniMax-M2.7`). Pricing is a rough tier-equivalent to Anthropic Sonnet/Haiku — override in `cost_tracker.PRICING_PER_1K_TOKENS` if your contract differs. See `.nexus/policy.yaml.example` for a starter.
 
 ### Deferred to v1.3
 - **MCP Server Mode** — stdio-only transport first; HTTP / SSE / OAuth deferred further. See `docs/superpowers/specs/2026-06-28-nexus-v12-mcp-server-design.md`.

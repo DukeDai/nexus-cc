@@ -44,16 +44,71 @@ def _fake_response(model="claude-sonnet-4-6", prompt=10, completion=20):
     )
 
 
-def test_default_models_drops_openai_ollama_minimax(router: ModelRouter):
-    """v1.2 surface: only Anthropic models exposed."""
+def test_default_models_exposes_anthropic_and_minimax(router: ModelRouter):
+    """v1.2 surface: Anthropic + MiniMax family (Anthropic-compatible API)."""
     available = router.get_available_models()
     assert all("gpt" not in m for m in available)
     assert all("llama" not in m for m in available)
     assert all("mistral" not in m for m in available)
-    assert all("MiniMax" not in m for m in available)
+    # Anthropic family still first-class.
     assert "claude-haiku-4-5" in available
     assert "claude-sonnet-4-6" in available
     assert "claude-opus-4-8" in available
+    # MiniMax family re-added (Anthropic-compatible API).
+    assert "MiniMax-M3" in available
+    assert "MiniMax-M2.7" in available
+
+
+def test_minimax_routes_via_minimax_cn_provider(router: ModelRouter, monkeypatch):
+    """Resolving MiniMax-M3 must produce an LLMClient with Provider.MINIMAX_CN."""
+    from src.llm.client import LLMClient, Provider
+
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-cp-test")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    client = router.get_client("MiniMax-M3")
+    assert isinstance(client, LLMClient)
+    assert client.provider == Provider.MINIMAX_CN
+    assert client.model == "MiniMax-M3"
+    # Default base URL is MiniMax's Anthropic-compatible endpoint.
+    assert "minimaxi.com" in client.base_url or "minimax" in client.base_url.lower()
+
+
+def test_minimax_resolves_via_policy_defaults(router: ModelRouter):
+    """policy.yaml defaults can map hints to MiniMax-M3."""
+    from src.llm.client import LLMClient, Response, Usage
+
+    router.policy.defaults = {h: "MiniMax-M3" for h in ModelHint}
+    with patch.object(LLMClient, "complete", return_value=_fake_response("MiniMax-M3")):
+        model_name, response = router.route(
+            messages=[{"role": "user", "content": "hi"}],
+            hint=ModelHint.PLANNER,
+        )
+    assert model_name == "MiniMax-M3"
+    assert response.content == "ok"
+
+
+def test_minimax_cost_record_uses_minimax_pricing(router: ModelRouter, tracker: CostTracker):
+    """CostRecord for MiniMax-M3 must use the MiniMax pricing tier (Sonnet 4.6-equivalent)."""
+    from src.llm.client import LLMClient
+
+    router.policy.cli_override = "MiniMax-M3"
+    with patch.object(LLMClient, "complete", return_value=_fake_response("MiniMax-M3", prompt=1000, completion=500)):
+        router.route(messages=[{"role": "user", "content": "x"}], hint=ModelHint.PLANNER)
+    assert len(tracker.records) == 1
+    rec = tracker.records[0]
+    assert rec.model == "MiniMax-M3"
+    # Sonnet 4.6-equivalent: 0.003/1k in + 0.015/1k out
+    # 1000 * 0.003 / 1000 + 500 * 0.015 / 1000 = 0.003 + 0.0075 = 0.0105
+    assert abs(rec.cost_usd - 0.0105) < 1e-9
+
+
+def test_env_key_falls_back_to_minimax_api_key(router: ModelRouter, monkeypatch):
+    """_env_key should pick up MINIMAX_API_KEY when Anthropic vars are unset."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-test-key")
+    assert router._env_key() == "minimax-test-key"
 
 
 def test_route_resolves_each_hint(router: ModelRouter):

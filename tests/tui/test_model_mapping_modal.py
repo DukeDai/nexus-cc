@@ -75,5 +75,7 @@ def test_modal_short_model_tag():
     assert _short_model_tag("claude-sonnet-4-6") == "Sonnet"
     assert _short_model_tag("claude-haiku-4-5") == "Haiku"
     assert _short_model_tag("claude-opus-4-8") == "Opus"
+    assert _short_model_tag("MiniMax-M3") == "M3"
+    assert _short_model_tag("MiniMax-M2.7") == "M2.7"
     assert _short_model_tag("gpt-4o-mini") == "mini"
     assert _short_model_tag("") == "?"

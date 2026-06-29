@@ -40,6 +40,8 @@ def _short_model_tag(model: str) -> str:
         'claude-sonnet-4-6' -> 'Sonnet'
         'claude-haiku-4-5'  -> 'Haiku'
         'claude-opus-4-8'   -> 'Opus'
+        'MiniMax-M3'     -> 'M3'
+        'MiniMax-M2.7'   -> 'M2.7'
         anything else       -> the basename after the last '-'
     """
     name = (model or "").lower()
@@ -49,6 +51,12 @@ def _short_model_tag(model: str) -> str:
         return "Haiku"
     if "opus" in name:
         return "Opus"
+    # MiniMax family — keep the model-version suffix for clarity in the TUI.
+    if "minimax" in name:
+        # e.g. "MiniMax-M3" -> "M3", "MiniMax-M2.7" -> "M2.7"
+        if "-" in model:
+            return model.split("-", 1)[1]
+        return model
     # Fallback: last hyphen-separated token (e.g. "gpt-4o-mini" -> "mini").
     return model.split("-")[-1] if model else "?"
 

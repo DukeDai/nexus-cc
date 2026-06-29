@@ -136,6 +136,14 @@ class ModelPolicy:
         body = """\
 # Nexus Model Policy (v1.2)
 # Uncomment any section to override the baked-in defaults.
+#
+# Available model names:
+#   Anthropic (default):  claude-haiku-4-5, claude-sonnet-4-6, claude-opus-4-8
+#   MiniMax (opt-in):     MiniMax-M3, MiniMax-M2.7   (Anthropic-compatible API)
+#
+# For MiniMax, also set:
+#   ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic
+#   ANTHROPIC_AUTH_TOKEN=sk-cp-...   (or MINIMAX_API_KEY=...)
 
 # defaults:
 #   planner: claude-sonnet-4-6

@@ -1,0 +1,23 @@
+# Nexus Model Policy — example for MiniMax-M3 users (Anthropic-compatible API).
+#
+# Copy this file to .nexus/policy.yaml and edit as needed. The model router
+# will look up `defaults` first, then `per_role`, then env vars, then built-in
+# defaults (Anthropic Sonnet 4.6 / Haiku 4.5 / Opus 4.8).
+#
+# Requires:
+#   ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic
+#   ANTHROPIC_AUTH_TOKEN=sk-cp-...   (or MINIMAX_API_KEY=...)
+#   ANTHROPIC_MODEL=MiniMax-M3
+
+defaults:
+  planner: MiniMax-M3
+  critique: MiniMax-M3
+  verifier_security: MiniMax-M2.7   # cheaper model for security checks
+  verifier_review: MiniMax-M3
+  evolver: MiniMax-M3
+
+# Optional: per-role overrides (most users don't need this).
+# per_role:
+#   implementer: MiniMax-M3
+#   specifier: MiniMax-M3
+#   security: MiniMax-M2.7
