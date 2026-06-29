@@ -11,7 +11,7 @@ from typing import Optional
 
 import click
 
-from .commands import run, tui, session, mcp, skills, cost
+from .commands import run, tui, session, mcp, skills, cost, model
 from .memory import memory
 
 
@@ -37,6 +37,7 @@ cli.add_command(session)
 cli.add_command(mcp)
 cli.add_command(skills)
 cli.add_command(cost)
+cli.add_command(model)
 cli.add_command(memory)
 
 

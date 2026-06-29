@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,29 @@ from src.agent.control import ControlChannel
 from src.agent.runtime import AgentRuntime
 from src.context.wal import WALManager
 from src.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
+
+
+def ensure_nexus_policy(project_root: Path) -> None:
+    """Create `.nexus/policy.yaml` if it doesn't already exist.
+
+    This writes a starter template (all sections commented out) so users
+    have a discoverable way to override the v1.2 defaults. It does NOT
+    overwrite an existing file — if the user has already authored one, we
+    leave it untouched.
+    """
+    policy_path = project_root / ".nexus" / "policy.yaml"
+    if policy_path.exists():
+        return
+    try:
+        from src.llm.model_policy import ModelPolicy
+
+        ModelPolicy.create_default_yaml(policy_path)
+        logger.debug("Created starter policy at %s", policy_path)
+    except Exception as exc:
+        # Failing to seed the template must not block a run.
+        logger.debug("ensure_nexus_policy: could not create %s: %s", policy_path, exc)
 
 
 @click.command()
@@ -24,6 +48,10 @@ def run(task: str, workdir: str | None, wal_path: str | None, spec: str | None, 
     """Run a task through AgentRuntime (plan-first architecture)."""
     project_path = Path(workdir or os.getcwd()).expanduser().resolve()
     wal_file = Path(wal_path).expanduser() if wal_path else (project_path / ".nexus" / "wal.jsonl")
+
+    # Auto-create a starter policy template on first nexus run. This is a
+    # discoverability aid only — we never overwrite an existing file.
+    ensure_nexus_policy(project_path)
 
     channel = ControlChannel()
     wal = WALManager(path=wal_file)
