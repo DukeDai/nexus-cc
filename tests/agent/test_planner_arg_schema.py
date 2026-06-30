@@ -244,8 +244,11 @@ async def test_planner_retries_once_on_invalid_args_then_succeeds():
 
 
 @pytest.mark.asyncio
-async def test_planner_raises_when_args_remain_invalid_after_max_retries():
-    """LLM keeps emitting invalid args; after MAX retries the planner raises."""
+async def test_planner_passes_through_with_warning_when_args_remain_invalid_after_max_retries(caplog):
+    """LLM keeps emitting invalid args; after MAX retries the planner falls back
+    to v1.1 pass-through behavior instead of raising. A warning is logged.
+    """
+    import logging
     reg = _registry_with_echo()
     invalid_1 = _valid_plan_json(args={"times": 3})
     invalid_2 = _valid_plan_json(args={"times": 3})
@@ -253,13 +256,18 @@ async def test_planner_raises_when_args_remain_invalid_after_max_retries():
     llm = ScriptedLLM([invalid_1, invalid_2, invalid_3])
     planner = Planner(llm=llm, tool_registry=reg, max_arg_schema_retries=2, max_retries=1)
 
-    with pytest.raises(ArgSchemaValidationError) as exc_info:
-        await planner.plan("say hi")
+    with caplog.at_level(logging.WARNING, logger="src.agent.planner"):
+        plan = await planner.plan("say hi")
 
-    assert exc_info.value.tool == "Echo"
-    assert any("message" in e for e in exc_info.value.errors)
+    # Plan returned with the invalid args (pass-through), not raised.
+    assert plan.steps[0].tool == "Echo"
+    assert plan.steps[0].args == {"times": 3}
     # 1 initial attempt + 2 self-correction retries = 3 total LLM calls.
     assert llm.call_count == 3
+    # Warning was emitted with the offending errors so they're observable.
+    warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("self-correction exhausted" in r.getMessage() for r in warning_records)
+    assert any("message" in r.getMessage() for r in warning_records)
 
 
 @pytest.mark.asyncio

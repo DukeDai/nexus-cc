@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 from src.llm.model_policy import ModelHint
 
 from .plan import Plan, PlanStep, PlanStepKind, OnFailure, new_plan_id, new_step_id
+
+_log = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """You are a planning agent. Given a user task, produce a structured execution plan.
@@ -344,9 +347,11 @@ class Planner:
         """Re-prompt the LLM when a TOOL step's args don't match its schema.
 
         On success, returns the corrected plan. If validation still fails
-        after ``max_arg_schema_retries`` attempts, raises
-        ``ArgSchemaValidationError`` — the caller can fall back to ask_user
-        or surface the error.
+        after ``max_arg_schema_retries`` attempts, falls back to v1.1
+        pass-through behavior: returns the plan unchanged (with the invalid
+        args) and logs a WARNING so the issue is observable in production.
+        The original Planner contract is preserved for edge cases where the
+        LLM can't or won't self-correct within the retry budget.
         """
         last_errors = _validate_plan_tool_args(plan, self._tool_registry)
         if not last_errors:
@@ -390,7 +395,17 @@ class Planner:
             if not new_errors:
                 return plan
             last_errors = new_errors
-        # Exhausted self-correction retries — raise so the caller can decide
-        # whether to abort, ask the user, or fall back to the legacy path.
-        # We raise the first error so the traceback pin-points one step.
-        raise last_errors[0]
+        # Exhausted self-correction retries — fall back to v1.1 pass-through.
+        # This preserves the original Planner contract for edge cases where
+        # the LLM can't or won't self-correct within MAX_ARG_SCHEMA_RETRIES.
+        # We log a warning so the misconfiguration is observable in production.
+        for err in last_errors:
+            _log.warning(
+                "planner arg-schema self-correction exhausted (%d retries); "
+                "falling back to pass-through for step %s tool=%s errors=%s",
+                self._max_arg_schema_retries,
+                err.step_id,
+                err.tool,
+                err.errors,
+            )
+        return plan  # pass-through fallback (v1.1 behavior)
