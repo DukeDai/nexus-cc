@@ -2,6 +2,8 @@
 
 ## v1.2.0 (2026-06-30)
 
+**29 commits since v1.1.0** (`960b384`..`2f4d9bf`). Compare: https://github.com/[org]/nexus-cc/compare/v1.1.0...v1.2.0
+
 ### Added
 - **Model Router** (feature-flagged via `NEXUS_USE_MODEL_ROUTER=1`, default off so v1.1 behavior is preserved exactly)
   - `ModelHint` enum (`planner` / `critique` / `verifier_security` / `verifier_review` / `evolver` / `default`) at `src/llm/router.py` — per-call-site model selection hint resolved by `ModelRouter` against `.nexus/policy.yaml`.
@@ -45,6 +47,8 @@
   - `pytest-cov` now lives in `[project.optional-dependencies].test` so CI installs it implicitly via `pip install .[test]`.
 
 ### Changed
+- **Canonicalized imports to `src.ralphloop.*`** — dropped the legacy `sys.path` hack (ac651b5). All internal modules now use the proper `src.ralphloop.*` namespace; external callers must add `src/` to `PYTHONPATH` or install as a package instead of relying on the removed sys.path bootstrap.
+- **WebSearchTool now raises `NotImplementedError`** instead of fake success (d95a235 — pre-1.2 cleanup) — users must implement or replace the tool before calling; the real SDK-backed implementation lands in `feat(tools): wire real WebSearch via Anthropic SDK web_search_20250305` (428eafc, see Added above).
 - `VERIFIER_SECURITY` default mapping = `claude-haiku-4-5` (the one deliberate cost-downgrade per v1.2 spec §1.2). All other hints default to `claude-sonnet-4-6` (matches v1.1 behavior — backward-compatible).
 - `LLMClient` accepts and forwards an optional `model_hint` kwarg; the legacy `LLMClient` absorbs it via `**kwargs` so behavior is unchanged when `NEXUS_USE_MODEL_ROUTER` is unset.
 - `Planner.plan()` and `AgentRuntime.plan_subplan()` both gain an optional `model_name` kwarg (default `None`) that preserves pre-v1.2 behavior when unset.
@@ -74,6 +78,8 @@
   Replace `gpt-4o-mini` with your preferred model; per-hint overrides also supported (e.g. `verifier_security: gpt-4o-mini`, `planner: gpt-4o`). See `docs/superpowers/specs/2026-06-28-nexus-v12-model-router-design.md` §5.
 
   **Note (revision):** MiniMax (via the Anthropic-compatible API at `https://api.minimaxi.com/anthropic`) is re-exposed as a first-class family in `ModelRouter.DEFAULT_MODELS` (`MiniMax-M3`, `MiniMax-M2.7`). Pricing is a rough tier-equivalent to Anthropic Sonnet/Haiku — override in `cost_tracker.PRICING_PER_1K_TOKENS` if your contract differs. See `.nexus/policy.yaml.example` for a starter.
+
+- **WAL v2 consumers must handle v1 legacy records.** `WALManager` (introduced in v1.1) still loads v1.0 WAL files via `iter_records()` for backward compatibility, but the `format_version=1` records are read-only — write paths only emit v2 records (with `metadata` blocks). Consumers parsing v1 WAL JSON directly (bypassing `WALManager`) will see new keys (`format_version`, optional `metadata`) and must tolerate them. The integration test `tests/integration/test_wal_backcompat.py` pins the v1+v2 mixed-readability contract. Run `nexus session migrate <plan_id>` (added in v1.1) to produce a v2-normalized copy of any legacy WAL.
 
 ### Deferred to v1.3
 - **MCP Server Mode** — stdio-only transport first; HTTP / SSE / OAuth deferred further. See `docs/superpowers/specs/2026-06-28-nexus-v12-mcp-server-design.md`.
