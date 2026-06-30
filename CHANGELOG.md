@@ -1,20 +1,67 @@
 # Changelog
 
-## Unreleased — v1.2 prep (Model Router only)
+## v1.2.0 (2026-06-30)
 
-### Added (Model Router — v1.2)
-- `ModelHint` enum (`planner` / `critique` / `verifier_security` / `verifier_review` / `evolver` / `default`) at `src/llm/router.py` — per-call-site model selection hint resolved by `ModelRouter` against `.nexus/policy.yaml`.
-- `ModelPolicy` dataclass at `src/llm/policy.py` — 4-tier resolution: `--model` CLI flag → `NEXUS_MODEL_<HINT>` env vars → `.nexus/policy.yaml` → built-in `DEFAULT_POLICY`.
-- `CostTracker` at `src/llm/cost.py` — in-memory ring buffer (last 1000 records) + WAL `kind="llm_cost"` JSONL append + aggregation by `model` / `hint` / `role` / `session`.
-- Router injection is **feature-flagged**: `ModelRouter.route(hint=...)` wraps `LLMClient.complete()` and emits a `CostRecord` per call; existing call sites get hint-aware routing without behavior change when hints are unset (default branch returns v1.1 Sonnet 4.6).
-- CLI: `nexus cost today|by-model|by-role|session <id>|export --csv`; `nexus model list|show <name>`.
-- TUI: `CostPanel` (live USD accumulation), `ModelMappingModal` (Shift+M), per-step model badge.
+### Added
+- **Model Router** (feature-flagged via `NEXUS_USE_MODEL_ROUTER=1`, default off so v1.1 behavior is preserved exactly)
+  - `ModelHint` enum (`planner` / `critique` / `verifier_security` / `verifier_review` / `evolver` / `default`) at `src/llm/router.py` — per-call-site model selection hint resolved by `ModelRouter` against `.nexus/policy.yaml`.
+  - `ModelPolicy` dataclass at `src/llm/policy.py` — 4-tier resolution: `--model` CLI flag → `NEXUS_MODEL_<HINT>` env vars → `.nexus/policy.yaml` → built-in `DEFAULT_POLICY`.
+  - `CostTracker` at `src/llm/cost.py` — in-memory ring buffer (last 1000 records) + WAL `kind="llm_cost"` JSONL append + aggregation by `model` / `hint` / `role` / `session`.
+  - Router injection wraps `LLMClient.complete()` and emits a `CostRecord` per call; existing call sites get hint-aware routing without behavior change when hints are unset (default branch returns v1.1 Sonnet 4.6).
+  - **Hint wiring** into every call site: `Planner.plan()`, `Walker._execute_critique_step()`, `ReviewGate` delegates (spec/logic/security), and `VerificationPipeline` (replaces the legacy `noop_delegate`).
+  - `RoleRegistry.spawn` now consumes `RoleDefinition.model_tier` (FAST → Haiku 4.5, SONNET → Sonnet 4.6, OPUS → Opus 4.8) and forwards the resolved model name as a hint.
+  - **MiniMax-M3 / MiniMax-M2.7 first-class models** — re-exposed via the Anthropic-compatible endpoint at `https://api.minimaxi.com/anthropic`; pricing tier-equivalent to Sonnet/Haiku 4.x as a starting estimate.
+  - 41 new router tests (model_policy 12, cost_tracker 14, model_router 13, integration 3); coverage on new modules: `model_policy` 100%, `cost_tracker` 100%, `model_router` 91.5%.
+- **CLI** (`nexus cost`, `nexus model`)
+  - `nexus cost today|by-model|by-role|session <id>|export --csv|summary` — read WAL `CostRecord`s with custom loader (no external deps).
+  - `nexus model list|show <name>|resolve` — exposes `DEFAULT_POLICY` + `.nexus/policy.yaml` + env overrides + cli_override + alias model names.
+  - `--model` flag in `nexus run` wired to `ModelPolicy.load(cli_model=...)`.
+  - Auto-create starter `.nexus/policy.yaml` on first `nexus run` (fails-soft, never overwrites existing files).
+  - 25 new CLI tests (12 cost, 10 model, 3 ensure_policy).
+- **TUI v1.2 surfaces**
+  - `CostPanel` — live session cost rollup, subscribes to `StepCompleted` so totals refresh after each step.
+  - `ModelMappingModal` (Shift+M) — one editable `Input` per `ModelHint`; Save writes `.nexus/policy.yaml` defaults and pushes the updated `ModelPolicy` back into the runtime via `set_policy`.
+  - Per-step model badge — `_resolve_step_model(step, policy)` maps every `PlanStep` (SUBPLAN+role / VERIFY+pipeline / CRITIQUE / TOOL / ASK_USER) to the model name the runtime will actually use, then `_short_model_tag` renders it (`[Sonnet]`, `[Haiku]`, `[M3]`, `[M2.7]`, `[Opus]`, `[mini]`).
+  - 11 new tests (`CostPanel` 6, `ModelMappingModal` 5) + 23 parametrized tests in `test_resolve_step_model.py` covering the full 5 step-kind × pipeline × role × policy matrix.
+- **Real WebSearch** (`src/tools/web_search.py`)
+  - Server-side `web_search_20250305` tool type via the Anthropic SDK (GA in `anthropic>=0.97`).
+  - Default model `claude-haiku-4-5-20251001` (cheap routing); `max_results` kwarg maps to SDK `max_uses`.
+  - 4 new mocked tests (no API key needed): results, answer-text fallback, error propagation, metadata.
+- **Planner arg-schema self-correction loop** (closes 3 documented flaky smoke tests: `test_smoke_add_comment`, `test_smoke_rename_files`, `test_smoke_fix_pytest`)
+  - Validates each TOOL step's `args` against `ToolRegistry.get(tool).args_schema` and re-prompts the LLM with the validation error.
+  - `max_arg_schema_retries=0` disables validation entirely (legacy escape hatch for v1.1 behavior).
+  - Non-`ToolRegistry` tools containers bypass the loop automatically (preserves existing fake/mock-based tests).
+  - 315-line parametrized test file pins the contract: valid-first-try / invalid-then-valid / invalid-forever / max-retries=0 / legacy signature / VERIFY+CRITIQUE-only plans.
+- **Backwards-compat + integration tests** (Task #22)
+  - `tests/integration/test_wal_backcompat.py` — replays 3 v1.1 WAL fixtures (simple, failed, multi_step) via `WALManager.iter_records`; verifies v1 step-completion cursor recovery and mixed v1+v2 readability.
+  - `tests/integration/test_router_cost_wal.py` — plan with one step per `ModelHint` kind (PLANNER / CRITIQUE / VERIFIER_REVIEW / VERIFIER_SECURITY); verifies `ModelRouter.route()` resolves to the correct model, WAL `append_cost()` is called once per routed call, `CostTracker.aggregate_by('hint')` reflects all routed hints, and WAL append failure is non-fatal.
+- **CI** (`.github/workflows/ci.yml`)
+  - GitHub Actions workflow triggered on push/PR to `main`.
+  - Python 3.12 matrix (matches `pyproject.toml` `requires-python = ">=3.12"`).
+  - Concurrency group cancels in-progress runs on the same ref.
+  - `pytest --cov=src` with the coverage gate driven by `pyproject.toml` `fail_under`.
+  - `ANTHROPIC_API_KEY` passed via secrets (optional; smoke tests skip cleanly when unset).
+  - Coverage artifacts uploaded with 14-day retention; optional Codecov upload guarded by `CODECOV_TOKEN`.
+  - `pytest-cov` now lives in `[project.optional-dependencies].test` so CI installs it implicitly via `pip install .[test]`.
 
 ### Changed
-- `VERIFIER_SECURITY` default mapping = `claude-haiku-4-5` (the one deliberate cost-downgrade per spec §1.2). All other hints default to `claude-sonnet-4-6` (matches v1.1 behavior — backward-compatible).
+- `VERIFIER_SECURITY` default mapping = `claude-haiku-4-5` (the one deliberate cost-downgrade per v1.2 spec §1.2). All other hints default to `claude-sonnet-4-6` (matches v1.1 behavior — backward-compatible).
+- `LLMClient` accepts and forwards an optional `model_hint` kwarg; the legacy `LLMClient` absorbs it via `**kwargs` so behavior is unchanged when `NEXUS_USE_MODEL_ROUTER` is unset.
+- `Planner.plan()` and `AgentRuntime.plan_subplan()` both gain an optional `model_name` kwarg (default `None`) that preserves pre-v1.2 behavior when unset.
+- `VerificationAdapter.__init__` accepts an optional `llm` parameter (default `None`); `register_defaults()` wires a combined delegate that dispatches on `ctx['review_type']`.
+- `_env_key()` fallback chain extended: `ANTHROPIC_API_KEY` → `ANTHROPIC_AUTH_TOKEN` → `MINIMAX_API_KEY` → `""` (so users can pick whichever env var they prefer for the MiniMax Anthropic-compatible endpoint).
+
+### Fixed
+- **`Planner` arg-schema validation** no longer fires for custom (non-`ToolRegistry`) tool containers used by tests (`FakeToolRegistry`, `MagicMock` with only `.execute()`, `None`); isinstance gate added in 38fe5c6 / e248d91 so existing tests keep working.
+- **`subplan_e2e` lambda mock** updated to accept the new `model_name` kwarg introduced by `RoleRegistry.spawn` (34cec45).
+- **`main.py` entry point** now imports `sys` so `python -m src.cli.main <subcmd> --help` works (c8e59d6).
+- **Coverage source path** corrected from non-existent `nexus` package to the actual importable `src/` root; `relative_files = true` keeps display paths stable across CWDs.
+- **WebSearchTool** no longer returns a fake success — raises `NotImplementedError` until the real SDK-backed implementation lands (d95a235 — pre-1.2 cleanup).
+- **Planner SYSTEM_PROMPT** now lists the 8 real tool names (Read, Write, Edit, Bash, Glob, Grep, Git, WebSearch); smoke test assertions decoupled from step-kind distribution and assert outcomes (file modified, files renamed, broken test fixed) instead of plan shape.
+- **Imports** — canonicalized to `src.ralphloop.*`; dropped the legacy `sys.path` hack.
 
 ### Breaking
-- **OpenAI / Ollama providers dropped from `DEFAULT_MODELS`.** v1.2 ships Anthropic-only by default; the router registry drops OpenAI/Ollama entries from `ModelConfig`. Users on those providers must add explicit entries to `.nexus/policy.yaml`.
+- **OpenAI / Ollama providers dropped from `DEFAULT_MODELS`.** v1.2 ships Anthropic + MiniMax by default; the router registry drops OpenAI/Ollama entries from `ModelConfig`. Users on those providers must add explicit entries to `.nexus/policy.yaml`.
 
   Migration — restore OpenAI `gpt-4o-mini` for all hints:
 
