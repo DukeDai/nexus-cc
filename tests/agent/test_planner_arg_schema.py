@@ -3,10 +3,10 @@
 These tests pin the v1.2 contract: when the Planner is constructed with a
 ToolRegistry, it validates each TOOL step's args against the matching tool's
 args_schema. On mismatch the planner re-prompts the LLM with a focused
-error message; after N=2 retries it raises ArgSchemaValidationError (the
-caller can fall back to ask_user or surface the error). When the Planner
-is constructed without a ToolRegistry (the legacy kwarg-free signature),
-behavior is unchanged — no validation, no re-prompt.
+error message; after N=2 retries it falls back to pass-through with a
+WARNING log (preserving v1.1 behavior). When the Planner is constructed
+without a ToolRegistry (the legacy kwarg-free signature), behavior is
+unchanged — no validation, no re-prompt.
 
 We mock the LLM to return scripts of responses so we can deterministically
 exercise each branch (no retries, exactly 1 retry, all retries failed).
