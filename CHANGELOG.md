@@ -29,7 +29,7 @@
   - Server-side `web_search_20250305` tool type via the Anthropic SDK (GA in `anthropic>=0.97`).
   - Default model `claude-haiku-4-5-20251001` (cheap routing); `max_results` kwarg maps to SDK `max_uses`.
   - 4 new mocked tests (no API key needed): results, answer-text fallback, error propagation, metadata.
-- **Planner arg-schema self-correction loop** (closes 3 documented flaky smoke tests: `test_smoke_add_comment`, `test_smoke_rename_files`, `test_smoke_fix_pytest`)
+- **Planner arg-schema self-correction loop** (hardens arg-schema validation; the 3 documented flaky smoke tests surface separate LLM-hallucination/runtime-config issues tracked separately)
   - Validates each TOOL step's `args` against `ToolRegistry.get(tool).args_schema` and re-prompts the LLM with the validation error.
   - `max_arg_schema_retries=0` disables validation entirely (legacy escape hatch for v1.1 behavior).
   - Non-`ToolRegistry` tools containers bypass the loop automatically (preserves existing fake/mock-based tests).
